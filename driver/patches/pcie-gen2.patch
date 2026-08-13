@@ -1,6 +1,6 @@
 --- a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
 +++ b/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c
-@@ -4942,6 +4942,260 @@
+@@ -4942,6 +4942,315 @@
                        devId);
          }
  
@@ -22,7 +22,6 @@
 +            #define PCIE_GEN2_OPT_MAGIC_ADDR        0x00820520U
 +            #define PCIE_LINK_SPEED_OF(stat)        (((stat) >> 16) & 0xFU)
 +            const NvU32 PCIE_GEN2_LINK_SPEED = 0x00000002U;
-+            const NvU32 PCIE_GEN2_PL_LINK_RATE_VALUE = 0x00240036U;
 +
 +            NvU32 capBefore = GPU_REG_RD32(pGpu, PCIE_GEN2_LINK_CAP_ADDR);
 +            NvU32 statBefore = GPU_REG_RD32(pGpu, PCIE_GEN2_LINK_CTRL_STATUS_ADDR);
@@ -164,8 +163,8 @@
 +
 +                {
 +                    NvU32 misc1 = GPU_REG_RD32(pGpu, PCIE_GEN2_PRIV_MISC_1_ADDR);
-+                    NvU32 misc1Want = (misc1 | PCIE_GEN2_PRIV_MISC_1_GEN2_EN)
-+                                      & ~PCIE_GEN2_PRIV_MISC_1_GEN2_VAL;
++                    NvU32 misc1Want = (misc1 | PCIE_GEN2_PRIV_MISC_1_GEN2_EN
++                                      | (1U << 15) | (1U << 30)) & ~PCIE_GEN2_PRIV_MISC_1_GEN2_VAL;
 +                    NvBool wrote = NV_FALSE;
 +                    NV_PRINTF(LEVEL_ERROR,
 +                              "SEC2_DEBUG: PCIe PRIV_MISC_1 pre=0x%08x want=0x%08x\n",
@@ -198,6 +197,48 @@
 +            }
 +
 +            {
++                NV_STATUS xpStatus2;
++                NvU32 xattempt2;
++                static const struct { NvU32 addr; NvU32 value; NvU32 mask; const char *name; } gen2FuseTable[] = {
++                    { 0x0008872cU, 0x0000000aU, 0x0000000fU, "XVE_FUSE_OVR" },
++                    { 0x000880a8U, 0x00000002U, 0x0000000fU, "XVE_TARGET"   },
++                };
++                NvU32 gi;
++                const NvU32 gen2FuseCount = sizeof(gen2FuseTable) / sizeof(gen2FuseTable[0]);
++                for (gi = 0; gi < gen2FuseCount; gi++)
++                {
++                    NvBool wrote = NV_FALSE;
++                    for (xattempt2 = 0; xattempt2 < 2 && !wrote; xattempt2++)
++                    {
++                        NvU32 rd;
++                        GPU_REG_WR32(pGpu, 0x001fa824U, wpr2Lo);
++                        GPU_REG_WR32(pGpu, 0x001fa828U, wpr2Hi);
++                        xpStatus2 = kgspSec2PostblTimingRefillPayload(pGpu, pKernelGsp,
++                            gen2FuseTable[gi].addr, gen2FuseTable[gi].value);
++                        if (xpStatus2 != NV_OK)
++                            continue;
++                        xpStatus2 = kgspExecuteBooterLoad_HAL(pGpu, pKernelGsp,
++                            memdescGetPhysAddr(pKernelGsp->pWprMetaDescriptor, AT_GPU, 0));
++                        rd = GPU_REG_RD32(pGpu, gen2FuseTable[gi].addr);
++                        NV_PRINTF(LEVEL_ERROR,
++                                  "SEC2_DEBUG: PCIe gen2fuse %s(0x%x) attempt=%u "
++                                  "status=0x%x rd=0x%08x\n",
++                                  gen2FuseTable[gi].name, gen2FuseTable[gi].addr,
++                                  xattempt2, xpStatus2, rd);
++                        if ((rd & gen2FuseTable[gi].mask) ==
++                            (gen2FuseTable[gi].value & gen2FuseTable[gi].mask))
++                            wrote = NV_TRUE;
++                    }
++                    if (!wrote)
++                        NV_PRINTF(LEVEL_ERROR,
++                                  "SEC2_DEBUG: PCIe gen2fuse FAILED to set %s\n",
++                                  gen2FuseTable[gi].name);
++                }
++                GPU_REG_WR32(pGpu, 0x001fa824U, wpr2Lo);
++                GPU_REG_WR32(pGpu, 0x001fa828U, wpr2Hi);
++            }
++
++            {
 +                NvU32 hier = GPU_REG_RD32(pGpu, PCIE_GEN2_VSEC_HIERARCHY_ADDR);
 +                hier = (hier & ~(1U << 12)) | (1U << 0);
 +                GPU_REG_WR32(pGpu, PCIE_GEN2_VSEC_HIERARCHY_ADDR, hier);
@@ -211,11 +252,12 @@
 +                NvU32 lc2 = GPU_REG_RD32(pGpu, PCIE_GEN2_LINK_CTRL_2_ADDR);
 +                NvU32 linkCfg;
 +                NvU32 cya0;
++                NvU32 linkRate;
++                NvU32 pollIter;
 +                lc2 = (lc2 & ~0x0000000FU) | PCIE_GEN2_LINK_SPEED;
-+                lc2 = (lc2 & ~0x000F0000U) | 0x000F0000U;
 +                GPU_REG_WR32(pGpu, PCIE_GEN2_LINK_CTRL_2_ADDR, lc2);
 +                cya0 = GPU_REG_RD32(pGpu, 0x0008c2c0U);
-+                cya0 = cya0 & ~(1U << 2);
++                cya0 = cya0 & ~0x00802005U;
 +                GPU_REG_WR32(pGpu, 0x0008c2c0U, cya0);
 +                NV_PRINTF(LEVEL_ERROR,
 +                          "SEC2_DEBUG: PCIe CYA_0 after clear DIS_G2: 0x%08x (bit2=%u)\n",
@@ -227,11 +269,24 @@
 +                NV_PRINTF(LEVEL_ERROR,
 +                          "SEC2_DEBUG: PCIe LINK_CONFIG_0 after MAX_RATE=2: 0x%08x\n",
 +                          GPU_REG_RD32(pGpu, 0x0008c040U));
-+                GPU_REG_WR32(pGpu, PCIE_GEN2_PL_LINK_RATE_ADDR, PCIE_GEN2_PL_LINK_RATE_VALUE);
-+                GPU_REG_WR32(pGpu, 0x0008872cU, 0x00000006U);
++                linkRate = GPU_REG_RD32(pGpu, PCIE_GEN2_PL_LINK_RATE_ADDR);
++                linkRate = (linkRate & ~0x000F0000U) | 0x00020000U;
++                GPU_REG_WR32(pGpu, PCIE_GEN2_PL_LINK_RATE_ADDR, linkRate);
 +                NV_PRINTF(LEVEL_ERROR,
-+                          "SEC2_DEBUG: PCIe XVE_OVR@8872c=0x%08x; skip mid-boot retrain\n",
-+                          GPU_REG_RD32(pGpu, 0x0008872cU));
++                          "SEC2_DEBUG: PCIe PL_LINK_RATE after MAX_RATE=2: 0x%08x\n",
++                          GPU_REG_RD32(pGpu, PCIE_GEN2_PL_LINK_RATE_ADDR));
++                linkCfg = GPU_REG_RD32(pGpu, 0x0008c040U);
++                GPU_REG_WR32(pGpu, 0x0008c040U, (linkCfg & ~0xFU) | 0x1U);
++                for (pollIter = 0; pollIter < 50; pollIter++)
++                {
++                    osDelay(10);
++                    if ((GPU_REG_RD32(pGpu, 0x0008c040U) & 0x10U) == 0)
++                        break;
++                }
++                linkCfg = GPU_REG_RD32(pGpu, 0x0008c040U);
++                GPU_REG_WR32(pGpu, 0x0008c040U, linkCfg & ~0xFU);
++                NV_PRINTF(LEVEL_ERROR,
++                          "SEC2_DEBUG: PCIe directed speed change done (polls=%u)\n", pollIter);
 +            }
 +
 +            NvU32 statAfter = GPU_REG_RD32(pGpu, PCIE_GEN2_LINK_CTRL_STATUS_ADDR);

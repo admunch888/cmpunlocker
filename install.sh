@@ -226,7 +226,7 @@ ok "Patched modules installed (profile ${CARD_PROFILE})"
 
 info "Configuring PCIe Gen2"
 cat > /etc/modprobe.d/cmp-pcie-gen2.conf <<'EOF'
-options nvidia NVreg_RegistryDwords="RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
+options nvidia NVreg_RegistryDwords="RmForceEnableGen2=1;RMPcieLinkSpeed=0x2"
 EOF
 ok "Wrote /etc/modprobe.d/cmp-pcie-gen2.conf"
 

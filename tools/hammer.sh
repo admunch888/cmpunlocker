@@ -103,7 +103,16 @@ retrain_one() {
     done
 
     generation="$(link_generation "${gpu}")"
-    log "${gpu}: no Gen2 window caught after ${MAX_ITERATIONS} attempts; final Gen${generation}"
+    cap2="$(setpci -s "${gpu}" CAP_EXP+2c.l 2>/dev/null || echo unreadable)"
+    gpu_lnkctl="$(setpci -s "${gpu}" CAP_EXP+10.w 2>/dev/null || echo unreadable)"
+    bridge_lnksta="$(setpci -s "${bridge}" CAP_EXP+12.w 2>/dev/null || echo unreadable)"
+    bridge_lnkcap2="$(setpci -s "${bridge}" CAP_EXP+2c.l 2>/dev/null || echo unreadable)"
+    bridge_lnkctl="$(setpci -s "${bridge}" CAP_EXP+10.w 2>/dev/null || echo unreadable)"
+    log "${gpu}: no Gen2 window caught after ${MAX_ITERATIONS} attempts; final Gen${generation}; LnkSta=0x${status}; LnkCap2=0x${cap2}; LnkCtl=0x${gpu_lnkctl}; bridge=${bridge} bridge_LnkSta=0x${bridge_lnksta} bridge_LnkCap2=0x${bridge_lnkcap2} bridge_LnkCtl=0x${bridge_lnkctl}"
+    cfg="/sys/bus/pci/devices/${gpu}/config"
+    if [[ -r "${cfg}" ]]; then
+        dd if="${cfg}" bs=1 skip=1536 count=256 2>/dev/null | hexdump -C | while read -r ln; do log "${gpu}: VSEC ${ln}"; done
+    fi
     return 1
 }
 
