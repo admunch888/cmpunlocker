@@ -54,6 +54,7 @@ PATCH_ORDER=(
     pcie-gen2.patch
     pcie-gen2-probe-retrain.patch
     name-string.patch
+    bar1-resize-unlock.patch
 )
 PATCH_FILES=()
 for name in "${PATCH_ORDER[@]}"; do
