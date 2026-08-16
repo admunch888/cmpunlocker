@@ -11,21 +11,37 @@ LOG_FILE="${LOG_DIR}/install_$(date +%Y%m%d_%H%M%S).log"
 PROFILE_OVERRIDE=""
 CONFIGURE_IOMMU=1
 CONFIGURE_GEN2_SERVICE=1
+MCLK_NDIV=""
+ENABLE_P2P=""
+INSTALL_PERSIST=1
+PIN_PACKAGES=1
 for arg in "$@"; do
     case "${arg}" in
         --profile=8gb|--profile=8GB) PROFILE_OVERRIDE="8gb" ;;
         --profile=10gb|--profile=10GB) PROFILE_OVERRIDE="10gb" ;;
         --no-iommu) CONFIGURE_IOMMU=0 ;;
         --no-gen2-service) CONFIGURE_GEN2_SERVICE=0 ;;
+        --mclk-ndiv=*) MCLK_NDIV="${arg#*=}" ;;
+        --p2p) ENABLE_P2P=1 ;;
+        --no-persist) INSTALL_PERSIST=0 ;;
+        --no-pin) PIN_PACKAGES=0 ;;
         -h|--help)
             cat <<'EOF'
 Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
+                         [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin]
 
   --profile=8gb   Force 8GB metadata label (geometry is still chosen per PCI ID)
   --profile=10gb  Force 10GB metadata label (geometry is still chosen per PCI ID)
   --no-iommu      Do not touch the kernel command line (leave IOMMU settings alone)
   --no-gen2-service
                   Do not install the early-boot PCIe Gen2 retrain service
+  --mclk-ndiv=N   Compile an HBM2e PLL target from NDIV 30-80 (N × 27 MHz).
+                  Values below the VBIOS NDIV downclock; values above it
+                  overclock. Omit the flag to preserve the VBIOS clock.
+  --p2p           Enable CMP-only BAR1 peer access. Requires a compatible PCIe
+                  topology; verify with cudaDeviceCanAccessPeer and real copies.
+  --no-persist    Do not auto-rebuild patched modules after kernel updates.
+  --no-pin        Do not pin the installed NVIDIA driver packages.
 
 By default the installer appends intel_iommu=on / amd_iommu=on plus iommu=pt to
 the kernel command line so the IOMMU runs in passthrough mode. This takes effect
@@ -52,7 +68,7 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 source "${SCRIPT_DIR}/common/lib.sh"
 
 banner
-step_init 6
+step_init 8
 
 step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./install.sh"
@@ -221,14 +237,31 @@ chmod +x "${SCRIPT_DIR}/driver/build.sh"
 CMPUNLOCKER_DRIVER_VERSION="${detected}" \
 CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}" \
 CMPUNLOCKER_GPU_INVENTORY="${CMPUNLOCKER_GPU_INVENTORY}" \
+CMPUNLOCKER_MCLK_NDIV="${MCLK_NDIV}" \
+CMPUNLOCKER_ENABLE_P2P="${ENABLE_P2P}" \
     "${SCRIPT_DIR}/driver/build.sh"
 ok "Patched modules installed (profile ${CARD_PROFILE})"
 
-info "Configuring PCIe Gen2"
-cat > /etc/modprobe.d/cmp-pcie-gen2.conf <<'EOF'
-options nvidia NVreg_RegistryDwords="RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
+step "Configuring modprobe options"
+MODPROBE_OPTS_FILE="/etc/modprobe.d/cmp-unlock.conf"
+GEN2_DWORDS="RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
+P2P_DWORDS=""
+if [[ -n "${ENABLE_P2P}" ]]; then
+    # RMForceStaticBar1 and RMPcieP2PType are NVIDIA RM registry dwords, not
+    # kernel module parameters: they must ride inside NVreg_RegistryDwords.
+    P2P_DWORDS="RMForceStaticBar1=1;RMPcieP2PType=1;"
+fi
+cat > "${MODPROBE_OPTS_FILE}" <<EOF
+options nvidia NVreg_RegistryDwords="${P2P_DWORDS}${GEN2_DWORDS}"
 EOF
-ok "Wrote /etc/modprobe.d/cmp-pcie-gen2.conf"
+# Single source of truth: modprobe processes files lexically and the last one
+# wins, so any stale per-feature file would silently drop the other setting.
+rm -f /etc/modprobe.d/cmp-pcie-gen2.conf /etc/modprobe.d/cmpunlocker-p2p.conf
+if [[ -n "${ENABLE_P2P}" ]]; then
+    ok "Wrote ${MODPROBE_OPTS_FILE} (Gen2 + P2P)"
+else
+    ok "Wrote ${MODPROBE_OPTS_FILE} (Gen2)"
+fi
 
 for legacy_unit in cmpretrain.service cmp-gen2-retrain.service; do
     systemctl disable --now "${legacy_unit}" 2>/dev/null || true
@@ -248,6 +281,32 @@ if (( CONFIGURE_GEN2_SERVICE == 1 )); then
     ok "Early-boot Gen2 retrain service armed (not started in this session)"
 else
     warn "--no-gen2-service given; early-boot PCIe retraining is not installed"
+fi
+
+step "Surviving kernel updates"
+PERSIST_STATUS="skipped"
+if (( INSTALL_PERSIST == 0 )); then
+    info "Persistence not requested (--no-persist)"
+    warn "A kernel update will boot on the stock driver (8 GB) until you re-run this installer"
+elif [[ ! -x "${SCRIPT_DIR}/persist/install-persist.sh" ]]; then
+    warn "persist/install-persist.sh missing — kernel updates will not be survived"
+else
+    # The persistence layer is deliberately not fatal: the patched modules for
+    # the running kernel are already installed and working at this point, and
+    # failing the whole install over the automation would be a worse outcome.
+    if CMPUNLOCKER_DRIVER_VERSION="${detected}" \
+       CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}" \
+       CMPUNLOCKER_GPU_INVENTORY="${CMPUNLOCKER_GPU_INVENTORY}" \
+       CMPUNLOCKER_MCLK_NDIV="${MCLK_NDIV}" \
+       CMPUNLOCKER_ENABLE_P2P="${ENABLE_P2P}" \
+       CMPUNLOCKER_PIN_PACKAGES="${PIN_PACKAGES}" \
+           "${SCRIPT_DIR}/persist/install-persist.sh"; then
+        PERSIST_STATUS="installed"
+    else
+        PERSIST_STATUS="failed"
+        warn "Could not install kernel-update persistence — see the log"
+        warn "The patched modules for $(uname -r) are installed and working regardless"
+    fi
 fi
 
 info "Configuring IOMMU (passthrough)"
@@ -386,11 +445,26 @@ step "Done"
 banner
 echo "cmpunlocker install finished!"
 echo "Profile: ${CARD_PROFILE}  |  ${#GPU_BDFS[@]} GPU(s): ${COUNT_8GB}× 8gb, ${COUNT_10GB}× 10gb"
+if [[ -n "${MCLK_NDIV}" ]]; then
+    echo "HBM clock: NDIV ${MCLK_NDIV} ($((MCLK_NDIV * 27)) MHz)"
+else
+    echo "HBM clock: stock (VBIOS)"
+fi
+if [[ -n "${ENABLE_P2P}" ]]; then
+    echo "P2P:      enabled (verify with a real peer-to-peer copy)"
+else
+    echo "P2P:      off (firmware-reported capabilities preserved)"
+fi
 if [[ -n "${IOMMU_PARAMS}" && "${IOMMU_STATUS}" != "skipped" ]]; then
     echo "IOMMU:   ${IOMMU_PARAMS} (${IOMMU_STATUS})"
 else
     echo "IOMMU:   not configured"
 fi
+case "${PERSIST_STATUS}" in
+    installed) echo "Kernel updates: modules rebuilt automatically, NVIDIA packages pinned" ;;
+    failed)    echo "Kernel updates: NOT survived (persistence install failed — see log)" ;;
+    skipped)   echo "Kernel updates: NOT survived (--no-persist)" ;;
+esac
 echo ""
 echo "Per-GPU expectations after unlock:"
 printf "  %-16s %-8s %-8s %s\n" "BDF" "PCI ID" "Variant" "Expect MiB"
@@ -405,11 +479,9 @@ echo -e "  3. Verify PCIe Gen2: ${CYAN}nvidia-smi --query-gpu=pcie.link.gen.curr
 echo -e "  4. Or check manually: ${CYAN}nvidia-smi${NC}"
 echo -e "  5. Unlock logs: ${CYAN}sudo dmesg | grep SEC2_DEBUG${NC}"
 echo -e "  6. Verify IOMMU after reboot: ${CYAN}cat /proc/cmdline${NC} and ${CYAN}ls /sys/class/iommu${NC}"
-if (( CONFIGURE_GEN2_SERVICE == 1 )); then
-    echo -e "  7. Verify negotiated Gen2: ${CYAN}sudo ./tools/service.sh verify${NC}"
-    echo -e "     Recovery boot option: ${CYAN}systemd.mask=gen2.service${NC}"
-fi
+echo -e "  7. Verify negotiated Gen2: ${CYAN}sudo ./tools/service.sh verify${NC}"
+echo -e "     Recovery boot option: ${CYAN}systemd.mask=gen2.service${NC}"
+echo -e "  8. Check rebuild state: ${CYAN}systemctl status cmpunlocker-rebuild${NC}"
 echo ""
-echo "This script removed the nvidia DKMS kernel modules. You will need to re-run this script after each kernel upgrade"
 echo "Log saved to: ${LOG_FILE}"
 echo ""

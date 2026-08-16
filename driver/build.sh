@@ -11,7 +11,9 @@ SRC_NAME="open-gpu-kernel-modules-${VERSION}"
 SRC_DIR="${BUILD_ROOT}/${SRC_NAME}"
 TARBALL="${BUILD_ROOT}/${SRC_NAME}.tar.gz"
 TARBALL_URL="https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/${VERSION}.tar.gz"
-KVER="$(uname -r)"
+KVER="${CMPUNLOCKER_KVER:-$(uname -r)}"
+KRUNNING="$(uname -r)"
+BUILD_ONLY="${CMPUNLOCKER_BUILD_ONLY:-0}"
 KSRC="/lib/modules/${KVER}/build"
 INSTALL_MOD_DIR="/lib/modules/${KVER}/updates/cmpunlocker"
 
@@ -35,7 +37,9 @@ version_supported() {
     return 1
 }
 
-[[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ${SCRIPT_DIR}/build.sh"
+if [[ "${BUILD_ONLY}" == "0" ]]; then
+    [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ${SCRIPT_DIR}/build.sh"
+fi
 [[ -n "${VERSION}" ]] || die "No driver version set (driver/VERSION empty and CMPUNLOCKER_DRIVER_VERSION unset)"
 version_supported "${VERSION}" || die "Unsupported driver version '${VERSION}' (supported: ${SUPPORTED_VERSIONS[*]})"
 [[ -d "${PATCH_DIR}" ]] || die "Missing patches directory: ${PATCH_DIR}"
@@ -56,6 +60,27 @@ PATCH_ORDER=(
     name-string.patch
     bar1-resize-unlock.patch
 )
+MCLK_PATCHES=(
+    mclk-clock-tuning-pre-gsp.patch
+    mclk-clock-tuning-post-gsp.patch
+)
+P2P_PATCHES=(
+    p2p-caps-override.patch
+    p2p-bar1.patch
+    p2p-skip-mailbox-preinit.patch
+    p2p-readcap-override.patch
+)
+MCLK_NDIV="${CMPUNLOCKER_MCLK_NDIV:-}"
+ENABLE_P2P="${CMPUNLOCKER_ENABLE_P2P:-}"
+if [[ -n "${MCLK_NDIV}" ]]; then
+    if ! [[ "${MCLK_NDIV}" =~ ^[0-9]+$ ]] || (( MCLK_NDIV < 30 || MCLK_NDIV > 80 )); then
+        die "CMPUNLOCKER_MCLK_NDIV must be an integer from 30 through 80"
+    fi
+    PATCH_ORDER+=("${MCLK_PATCHES[@]}")
+fi
+if [[ -n "${ENABLE_P2P}" ]]; then
+    PATCH_ORDER+=("${P2P_PATCHES[@]}")
+fi
 PATCH_FILES=()
 for name in "${PATCH_ORDER[@]}"; do
     p="${PATCH_DIR}/${name}"
@@ -94,7 +119,7 @@ case "${PROFILE}" in
         ;;
 esac
 
-BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
+BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:mclk=${MCLK_NDIV:-stock}:p2p=${ENABLE_P2P:-off}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
 
@@ -130,6 +155,34 @@ else
         patch -p1 < "${PATCH_FILES[$i]}"
     done
     ok "All patches applied"
+
+    if [[ -n "${MCLK_NDIV}" ]]; then
+        TU102_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/arch/turing/kernel_gsp_tu102.c"
+        MCLK_GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
+        python3 - "${MCLK_NDIV}" "${TU102_C}" "${MCLK_GSP_C}" <<'PY'
+import pathlib, re, sys
+ndiv = sys.argv[1]
+for filename in sys.argv[2:]:
+    path = pathlib.Path(filename)
+    text = path.read_text()
+    changed, count = re.subn(
+        r"static const NvU32 newNdiv = XX;",
+        f"static const NvU32 newNdiv = {ndiv};",
+        text,
+    )
+    if count != 1:
+        raise SystemExit(f"NDIV placeholder count in {path.name}: expected 1, got {count}")
+    path.write_text(changed)
+PY
+        ok "HBM2e clock target: NDIV=${MCLK_NDIV} ($((MCLK_NDIV * 27)) MHz)"
+    else
+        info "HBM2e clock tuning disabled; VBIOS clock is preserved"
+    fi
+    if [[ -n "${ENABLE_P2P}" ]]; then
+        ok "BAR1 P2P patches enabled"
+    else
+        info "P2P override disabled; firmware-reported peer capabilities are preserved"
+    fi
 
     GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
     [[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after patching"
@@ -185,15 +238,19 @@ PY
 fi
 
 cd "${SRC_DIR}"
-mkdir -p "${INSTALL_MOD_DIR}"
-printf '%s\n' "${VERSION}" > "${INSTALL_MOD_DIR}/driver_version"
-printf '%s\n' "${PROFILE}" > "${INSTALL_MOD_DIR}/card_profile"
-printf '%s\n' "${UNLOCK_LABEL}" > "${INSTALL_MOD_DIR}/unlock_geometry"
-if [[ -n "${CMPUNLOCKER_GPU_INVENTORY:-}" ]]; then
-    printf '%s\n' "${CMPUNLOCKER_GPU_INVENTORY}" > "${INSTALL_MOD_DIR}/gpu_inventory"
-    ok "Wrote gpu_inventory ($(echo "${CMPUNLOCKER_GPU_INVENTORY}" | grep -c . || true) GPU(s))"
-else
-    : > "${INSTALL_MOD_DIR}/gpu_inventory"
+if [[ "${BUILD_ONLY}" == "0" ]]; then
+    mkdir -p "${INSTALL_MOD_DIR}"
+    printf '%s\n' "${VERSION}" > "${INSTALL_MOD_DIR}/driver_version"
+    printf '%s\n' "${PROFILE}" > "${INSTALL_MOD_DIR}/card_profile"
+    printf '%s\n' "${UNLOCK_LABEL}" > "${INSTALL_MOD_DIR}/unlock_geometry"
+    printf '%s\n' "${MCLK_NDIV:-stock}" > "${INSTALL_MOD_DIR}/mclk_ndiv"
+    printf '%s\n' "${ENABLE_P2P:+enabled}" > "${INSTALL_MOD_DIR}/p2p"
+    if [[ -n "${CMPUNLOCKER_GPU_INVENTORY:-}" ]]; then
+        printf '%s\n' "${CMPUNLOCKER_GPU_INVENTORY}" > "${INSTALL_MOD_DIR}/gpu_inventory"
+        ok "Wrote gpu_inventory ($(echo "${CMPUNLOCKER_GPU_INVENTORY}" | grep -c . || true) GPU(s))"
+    else
+        : > "${INSTALL_MOD_DIR}/gpu_inventory"
+    fi
 fi
 
 info "Building modules for kernel ${KVER}..."
@@ -212,6 +269,10 @@ if command -v ccache &>/dev/null; then
 fi
 make -j"${JOBS}" modules SYSSRC="${KSRC}" CC="${CC_CMD}"
 ok "Modules built"
+if [[ "${BUILD_ONLY}" == "1" ]]; then
+    ok "Build-only requested (CMPUNLOCKER_BUILD_ONLY=1) — skipping install, depmod, initramfs"
+    exit 0
+fi
 if command -v ccache &>/dev/null; then
     ccache -s 2>/dev/null | sed 's/^/  /' || true
 fi
@@ -231,6 +292,7 @@ for ko in "${KO_FILES[@]}"; do
 done
 
 depmod -a "${KVER}"
+sync
 ok "depmod complete"
 rebuild_initramfs() {
     if command -v update-initramfs &>/dev/null; then
@@ -256,6 +318,15 @@ rebuild_initramfs() {
 }
 
 rebuild_initramfs || true
+
+if [[ "${KVER}" != "${KRUNNING}" ]]; then
+    echo ""
+    ok "Built and installed for kernel ${KVER} (running: ${KRUNNING})"
+    info "The patched modules take effect when ${KVER} boots"
+    echo ""
+    exit 0
+fi
+
 resolved="$(modprobe -n -v nvidia 2>/dev/null | awk '/insmod/ {print $2; exit}' || true)"
 if [[ -n "${resolved}" ]]; then
     info "modprobe will load: ${resolved}"

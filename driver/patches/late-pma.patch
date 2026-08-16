@@ -68,7 +68,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c b/src/nvidia/src/kernel
      }
  
      return status;
-@@ -3646,6 +3675,181 @@
+@@ -3646,6 +3675,200 @@
      return status;
  }
  
@@ -100,6 +100,25 @@ diff -Naur a/src/nvidia/src/kernel/gpu/mem_mgr/mem_mgr.c b/src/nvidia/src/kernel
 +    devId = pGpu->idInfo.PCIDeviceID >> 16;
 +    if (devId != 0x20C2 && devId != 0x2082)
 +        return NV_OK;
++
++    /*
++     * The candidate high reserved region overlaps WPR and the GSP heap on
++     * CMP 170HX. Registering it with PMA lets Copy Engine allocations land
++     * in protected memory and causes Xid 31 REGION_VIOLATION writes. The
++     * unusable tail is only about 141 MiB of the 63.5 GiB exposed memory.
++     * Prefer a small capacity loss to silent corruption or CE faults.
++     */
++    /*
++     * The repeated device-id test below keeps the intact body (still present
++     * underneath) reachable from the compiler's view, so leaving the skip in
++     * place produces no unreachable-code / unused-variable warnings.
++     */
++    if (devId == 0x20C2 || devId == 0x2082)
++    {
++        NV_PRINTF(LEVEL_WARNING,
++                  "CMPUNLOCK_PMA: extension skipped (WPR/GSP heap overlap)\n");
++        return NV_OK;
++    }
 +
 +    stockFbBytes = 0x200000000ULL;
 +

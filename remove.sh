@@ -2,28 +2,59 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="cmpunlocker"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-INSTALL_DIR="/opt/cmpunlocker"
 
 source "${SCRIPT_DIR}/common/lib.sh"
 
-banner
+RELOAD_DRIVER=0
+for arg in "$@"; do
+    case "${arg}" in
+        --reload) RELOAD_DRIVER=1 ;;
+        --yes|-y) : ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: sudo ./remove.sh [--yes] [--reload]
+
+Removes cmpunlocker from the system:
+  - Stops and removes the early-boot Gen2 retrain service
+  - Removes /lib/modules/*/updates/cmpunlocker/
+  - Removes the kernel-update hooks, the boot-time rebuild service, and
+    the NVIDIA package version pin
+  - Restores the pre-install kernel command line (reverts IOMMU changes)
+  - Rebuilds initramfs
+
+By default the driver already running in memory is left alone. The card comes
+up on the stock driver at the next boot, which is the safe order.
+
+  --reload  Swap the running driver for the stock one immediately instead of
+            waiting for the reboot. OFF by default because loading the stock
+            nvidia-drm against a CMP 170HX can wedge the machine (the kernel
+            keeps answering pings while userspace stops making progress).
+
+Logs under /var/log/cmpunlocker/ are kept.
+
+Run: sudo ./remove.sh --yes
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: ${arg}" >&2
+            echo "Run: sudo ./remove.sh --help" >&2
+            exit 1
+            ;;
+    esac
+done
 
 if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
-    warn "This removes cmpunlocker patched kernel modules:"
-    echo "  - Stops cmpunlocker systemd service"
-    echo "  - Removes /lib/modules/*/updates/cmpunlocker/"
-    echo "  - Removes ${INSTALL_DIR} (legacy install dir, if present)"
-    echo "  - Reloads stock NVIDIA modules (brief display interruption)"
-    echo "  - Removes cmpretrain service / modprobe Gen2 helpers"
-    echo "  - Restores the pre-install kernel command line (reverts IOMMU changes)"
+    echo "This removes cmpunlocker patched kernel modules and all of its"
+    echo "kernel-update automation. Run with --yes to proceed:"
     echo ""
-    echo "Run: sudo ./remove.sh --yes"
+    echo "  sudo ./remove.sh --yes"
+    echo ""
     exit 1
 fi
 
-step_init 5
+banner
+step_init 6
 
 step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./remove.sh --yes"
@@ -36,26 +67,40 @@ fi
 LOG_FILE="${LOG_DIR}/remove_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-step "Stopping cmpunlocker service and PCIe/IOMMU helpers"
-if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
-    systemctl stop "${SERVICE_NAME}" || true
-    ok "Service stopped"
+step "Releasing the NVIDIA package version pin"
+# Unpin first: the helper that knows how to undo the hold lives in the
+# directory removed a few lines further down.
+if [[ -x /usr/lib/cmpunlocker/pin-packages.sh ]]; then
+    /usr/lib/cmpunlocker/pin-packages.sh unpin || true
+    ok "Package pin released (if any was set)"
 else
-    warn "Service not running"
+    info "No pin helper found — nothing to release"
 fi
-if systemctl is-enabled --quiet "${SERVICE_NAME}" 2>/dev/null; then
-    systemctl disable "${SERVICE_NAME}" || true
-    ok "Service disabled"
-fi
-if [[ -f "${SERVICE_FILE}" ]]; then
-    rm -f "${SERVICE_FILE}"
-    systemctl daemon-reload
-    systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
-    ok "Removed ${SERVICE_FILE}"
-fi
-pkill -f "${INSTALL_DIR}/daemon/watchdog.py" 2>/dev/null || true
 
-info "Removing PCIe Gen2 helpers"
+step "Removing kernel-update persistence"
+if command -v systemctl &>/dev/null; then
+    systemctl disable --now cmpunlocker-rebuild.service 2>/dev/null || true
+    systemctl unmask nvidia-fallback.service 2>/dev/null || true
+fi
+rm -f /etc/systemd/system/cmpunlocker-rebuild.service
+rm -f /etc/kernel/install.d/95-cmpunlocker.install
+rm -f /etc/kernel/postinst.d/cmpunlocker
+rm -f /etc/kernel/postrm.d/cmpunlocker
+rm -f /etc/pacman.d/hooks/95-cmpunlocker.hook
+rm -f /etc/depmod.d/cmpunlocker.conf
+rm -f /etc/modprobe.d/cmpunlocker.conf
+rm -f /etc/modprobe.d/cmp-unlock.conf
+rm -rf /usr/lib/cmpunlocker
+rm -rf /var/lib/cmpunlocker
+rm -rf /etc/cmpunlocker
+if [[ -f /etc/pacman.conf.cmpunlocker.bak ]]; then
+    mv -f /etc/pacman.conf.cmpunlocker.bak /etc/pacman.conf
+    ok "Restored /etc/pacman.conf from pre-install backup"
+fi
+command -v systemctl &>/dev/null && systemctl daemon-reload 2>/dev/null || true
+ok "Kernel hooks, boot service and package pins removed"
+
+step "Removing PCIe Gen2 helpers"
 for legacy_unit in cmpretrain.service cmp-gen2-retrain.service; do
     systemctl disable --now "${legacy_unit}" 2>/dev/null || true
     systemctl reset-failed "${legacy_unit}" 2>/dev/null || true
@@ -69,7 +114,7 @@ rm -f /etc/systemd/system/gen2.service /usr/local/sbin/gen2-hammer
 systemctl daemon-reload 2>/dev/null || true
 ok "Removed PCIe Gen2 helpers"
 
-info "Restoring IOMMU kernel command line"
+step "Restoring IOMMU kernel command line"
 iommu_restored=0
 for cfg in /etc/default/grub /etc/kernel/cmdline; do
     if [[ -f "${cfg}.cmpunlocker.bak" ]]; then
@@ -91,7 +136,7 @@ else
     warn "No IOMMU config backup found — kernel command line left as-is"
 fi
 
-step "Removing patched modules and legacy files"
+step "Removing patched modules"
 mod_removed=0
 kernels_touched=()
 shopt -s nullglob
@@ -99,7 +144,10 @@ for mod_dir in /lib/modules/*/updates/cmpunlocker; do
     if [[ -d "${mod_dir}" ]]; then
         kernel="$(basename "$(dirname "$(dirname "${mod_dir}")")")"
         rm -rf "${mod_dir}"
+        # depmod AND sync: a power cut between depmod and the next flush
+        # leaves a zero-length modules.dep and nothing resolves on boot.
         depmod -a "${kernel}" 2>/dev/null || true
+        sync
         ok "Removed patched modules for kernel ${kernel}"
         mod_removed=$((mod_removed + 1))
         kernels_touched+=("${kernel}")
@@ -131,51 +179,9 @@ for gsp in /lib/firmware/nvidia/*/gsp_tu10x.bin; do
         "${gsp}.cmpunlocker.pat"
 done
 
-if [[ -d "${INSTALL_DIR}" ]]; then
-    rm -rf "${INSTALL_DIR}"
-    ok "Removed ${INSTALL_DIR}"
-else
-    warn "${INSTALL_DIR} not found (ok for module-only installs)"
-fi
-
-step "Reloading stock NVIDIA driver"
-if lsmod | grep -q '^nvidia'; then
-    warn "Unloading NVIDIA modules (display may flicker)"
-    for svc in gdm3 sddm lightdm display-manager; do
-        systemctl stop "${svc}" 2>/dev/null || true
-    done
-    systemctl stop nvidia-persistenced 2>/dev/null || true
-    killall -9 Xorg Xwayland nvidia-persistenced 2>/dev/null || true
-    sleep 1
-
-    for mod in nvidia_drm nvidia_uvm nvidia_modeset nvidia; do
-        modprobe -r "${mod}" 2>/dev/null || true
-    done
-    sleep 1
-
-    if lsmod | grep -q '^nvidia'; then
-        for mod in nvidia_uvm nvidia_drm nvidia_modeset nvidia; do
-            rmmod -f "${mod}" 2>/dev/null || true
-        done
-    fi
-
-    if modprobe nvidia 2>/dev/null; then
-        modprobe nvidia-modeset 2>/dev/null || true
-        modprobe nvidia-uvm 2>/dev/null || true
-        modprobe nvidia-drm 2>/dev/null || true
-        ok "Stock NVIDIA driver reloaded"
-    else
-        warn "Could not reload NVIDIA driver — reboot to finish cleanup"
-    fi
-
-    for svc in gdm3 sddm lightdm display-manager; do
-        if systemctl is-enabled --quiet "${svc}" 2>/dev/null; then
-            systemctl start "${svc}" 2>/dev/null || true
-            break
-        fi
-    done
-else
-    warn "NVIDIA modules not loaded — skipping driver reload"
+if [[ -d /opt/cmpunlocker ]]; then
+    rm -rf /opt/cmpunlocker
+    ok "Removed /opt/cmpunlocker (legacy install dir)"
 fi
 
 step "Done"
@@ -183,6 +189,29 @@ banner
 echo "cmpunlocker has been removed from system."
 echo "Log saved to: ${LOG_FILE}"
 echo ""
-echo "If the GPU or display is not working, reboot once:"
-echo -e "  ${CYAN}sudo reboot${NC}"
+
+if (( RELOAD_DRIVER == 1 )); then
+    info "Reloading stock NVIDIA driver (--reload)..."
+    # Deliberately guarded with timeouts: loading stock nvidia-drm against a
+    # CMP 170HX can wedge the machine (no usable display engine).
+    systemctl stop nvidia-persistenced 2>/dev/null || true
+    for mod in nvidia_drm nvidia_uvm nvidia_modeset nvidia; do
+        timeout 20 modprobe -r "${mod}" 2>/dev/null || true
+    done
+    sleep 1
+    if timeout 20 modprobe nvidia 2>/dev/null; then
+        modprobe nvidia-modeset 2>/dev/null || true
+        modprobe nvidia-uvm 2>/dev/null || true
+        modprobe nvidia-drm 2>/dev/null || true
+        ok "Stock NVIDIA driver reloaded"
+    else
+        warn "Could not reload NVIDIA driver — reboot to finish cleanup"
+    fi
+else
+    info "Running driver left in place; the stock driver loads on next boot."
+fi
+
+echo ""
+echo "Reboot once to finish:"
+echo -e "  ${CYAN}sudo shutdown -h now${NC}   # cold reboot (full power off, then on)"
 echo ""
