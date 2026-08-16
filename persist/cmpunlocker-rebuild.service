@@ -1,6 +1,6 @@
 [Unit]
 Description=cmpunlocker: ensure patched NVIDIA modules exist for the running kernel
-Documentation=https://github.com/amoghmunikote/cmpunlocker
+Documentation=https://github.com/admunch888/cmpunlocker
 # /var/lib/cmpunlocker holds the build payload, so the filesystems have to be up.
 After=local-fs.target
 # Blocks boot from completing until the patched driver is in place. A CMP that
