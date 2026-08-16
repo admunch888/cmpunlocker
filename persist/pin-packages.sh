@@ -34,7 +34,12 @@ info() { echo "cmpunlocker: $*"; }
 # linux-firmware updates and can wedge the whole upgrade transaction on a
 # dependency conflict.
 #
-EXCLUDE_RE='^nvidia-gpu-firmware|^firmware-nvidia|^nvidia-firmware'
+# The name differs per distro: Fedora = nvidia-gpu-firmware, Arch =
+# firmware-nvidia / nvidia-firmware, Ubuntu = linux-firmware-nvidia-graphics /
+# linux-firmware-nvidia-gsp. Rather than enumerate every split, exclude any
+# package with "firmware" in its name — no driver package ever carries it.
+#
+EXCLUDE_RE='firmware'
 
 filter() { grep -i nvidia | grep -Ev "${EXCLUDE_RE}" | sort -u; }
 
