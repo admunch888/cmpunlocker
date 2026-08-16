@@ -17,6 +17,11 @@ that adds the missing features on top of the 610.57.04-compatible base:
 - **Anti-rollback** — NVIDIA driver packages are pinned to the supported
   version so a distro upgrade cannot strand the unlock
 
+This work builds on [amoghmunikote](https://github.com/amoghmunikote/cmpunlocker),
+[asm64-hooligan](https://github.com/asm64-hooligan/cmpunlocker), and
+[bayley](https://github.com/bayley) — see [CREDITS.md](CREDITS.md) for the full
+lineage.
+
 **[Join the Discord community](https://discord.gg/CdHSakKSFv)** for support.
 
 ---
