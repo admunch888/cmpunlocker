@@ -8,6 +8,12 @@ readonly LOG_FILE="/var/log/gen2.log"
 readonly TARGET_GEN="${CMP170HX_GEN2_TARGET:-2}"
 readonly MAX_ITERATIONS="${CMP170HX_GEN2_MAX_ITERATIONS:-600}"
 readonly RETRAIN_INTERVAL="${CMP170HX_GEN2_RETRAIN_INTERVAL:-0.05}"
+#
+# Wall-clock bound per card. MAX_ITERATIONS alone is not a time bound:
+# 600 attempts at 0.05s is >=30s for a card that never catches a Gen2
+# window, which on its own can outrun the unit TimeoutStartSec and get
+# the service killed mid-retrain, leaving later cards untouched.
+readonly CARD_DEADLINE="${CMP170HX_GEN2_CARD_DEADLINE:-20}"
 
 log() {
     local line
@@ -79,9 +85,16 @@ retrain_one() {
     fi
 
     log "${gpu}: start via upstream ${bridge}; initial Gen${initial}; target Gen${TARGET_GEN}"
+    # Each card runs in its own subshell, so SECONDS starts this card's clock.
+    SECONDS=0
     for ((iteration = 1; iteration <= MAX_ITERATIONS; iteration++)); do
         if ! is_supported_gpu "${gpu}"; then
             log "${gpu}: disappeared during retrain; stopping immediately"
+            return 1
+        fi
+        if (( SECONDS >= CARD_DEADLINE )); then
+            generation="$(link_generation "${gpu}")"
+            log "${gpu}: ${CARD_DEADLINE}s budget spent after ${iteration} attempts; final Gen${generation}"
             return 1
         fi
 
@@ -123,6 +136,10 @@ main() {
         echo "CMP170HX_GEN2_MAX_ITERATIONS must be a positive integer" >&2
         exit 1
     fi
+    if ! [[ "${CARD_DEADLINE}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "CMP170HX_GEN2_CARD_DEADLINE must be a positive integer (seconds)" >&2
+        exit 1
+    fi
     command -v lspci >/dev/null || { echo "lspci is required" >&2; exit 1; }
     command -v setpci >/dev/null || { echo "setpci is required" >&2; exit 1; }
 
@@ -139,10 +156,21 @@ main() {
         return 0
     fi
 
+    #
+    # Retrain concurrently: the pokes are per-device and idempotent, so N cards
+    # finish in about one card's budget instead of N times it. Sequentially, an
+    # 8-GPU box could spend minutes here with the unit blocking boot.
+    #
+    local -a pids=()
+    local pid
     for gpu in "${gpus[@]}"; do
-        retrain_one "${gpu}" || rc=1
+        retrain_one "${gpu}" &
+        pids+=("$!")
     done
-    log "early retrain finished (rc=${rc})"
+    for pid in "${pids[@]}"; do
+        wait "${pid}" || rc=1
+    done
+    log "early retrain finished (rc=${rc}, cards=${#gpus[@]}, budget=${CARD_DEADLINE}s each)"
     return "${rc}"
 }
 

@@ -8,7 +8,14 @@ ConditionPathExists=/usr/local/sbin/gen2-hammer
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/gen2-hammer
-TimeoutStartSec=45
+#
+# gen2-hammer retrains every card concurrently and gives each one this budget,
+# so the run costs about one card's budget no matter how many are installed.
+# TimeoutStartSec is kept well above it: this unit blocks boot, and a timeout
+# kills the retrain mid-flight rather than letting it report and exit cleanly.
+#
+Environment=CMP170HX_GEN2_CARD_DEADLINE=20
+TimeoutStartSec=60
 RemainAfterExit=no
 
 [Install]

@@ -130,8 +130,18 @@ the mailbox peer pre-registration that otherwise blocks it. Requires a
 compatible PCIe topology (both cards behind a common switch).
 
 **Do not trust `nvidia-smi topo -p2p` or `torch.cuda.can_device_access_peer()`
-alone** — verify with a real peer-to-peer copy that checks the destination
-bytes in both directions. See `benchmark/` for a test.
+alone** — those report what the driver claims, and `--p2p` works by changing
+exactly that claim. Verify with a real peer-to-peer copy that checks the
+destination bytes in both directions:
+
+```bash
+sudo ./tools/p2p-verify.py            # add --size-mb / --iters to taste
+sudo dmesg | grep -i CMPUNLOCK_BAR1P2P
+```
+
+`tools/p2p-verify.py` talks to `libcuda` directly, so it needs no CUDA toolkit
+and no PyTorch. It copies a per-direction keyed pattern between every ordered
+GPU pair, reads the destination back, and exits non-zero if any byte differs.
 
 ### PMA region fix (always on)
 
