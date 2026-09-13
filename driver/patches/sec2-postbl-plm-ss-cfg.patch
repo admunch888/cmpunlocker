@@ -67,7 +67,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
  
      {
          // If the new FB layout requires a scrubber ucode to scrub additional space, prepare it now
-@@ -4821,6 +4857,124 @@
+@@ -4821,6 +4857,125 @@
      // Setup arguments for bootstrapping GSP
      NV_CHECK_OK_OR_RETURN(LEVEL_ERROR, kgspPrepareForBootstrap_HAL(pGpu, pKernelGsp, KGSP_BOOT_MODE_NORMAL));
  
@@ -80,6 +80,7 @@ diff -Naur a/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c b/src/nvidia/src/kernel/
 +        static const struct { NvU32 addr; NvU32 value; const char *name; } plmTable[] = {
 +            { 0x001fa7ccU, 0xfffff0ffU, "WPR_CFG" },
 +            { 0x009a0148U, 0xffffffffU, "FBPA" },
++            { 0x009a0168U, 0xffffffffU, "FBPA_MEM" },
 +            { 0x001fa7c4U, 0xffffffffU, "WPR" },
 +            { 0x00823804U, 0xffffffffU, "FEAT" },
 +            { 0x00088ff4U, 0xffffffffU, "XVE" },

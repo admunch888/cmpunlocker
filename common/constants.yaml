@@ -52,6 +52,9 @@ unlocks:
       feat:           { addr: "0x00823804", value: "0xffffffff" }
       feat2:          { addr: "0x00823b00", value: "0xffffffff" }
       fbpa_plm:       { addr: "0x009a0148", value: "0xffffffff" }
+      # FBPA_MEM gates the CONFIG0..CONFIG4 DRAM timing registers. Without it
+      # open, host writes to them over BAR0 are dropped and read back unchanged.
+      fbpa_mem_plm:   { addr: "0x009a0168", value: "0xffffffff" }
 
   compute_throughput:
     patch: sec2-postbl-plm-ss-cfg.patch
