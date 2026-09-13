@@ -280,9 +280,11 @@ def main():
     else:
         print("  topology: cards span multiple upstream bridges %s" % sorted(
             b or "?" for b in bridges))
-        print("  NOTE: the --p2p read-cap override assumes a common switch. Across")
-        print("        bridges peer traffic may cross the host bridge, where the")
-        print("        override is not safe. Treat failures below as real.")
+        print("  NOTE: the read-cap override was written for a common switch. Across")
+        print("        bridges peer traffic climbs to the root complex instead, which")
+        print("        can work - verified at ~2.8 GB/s on two PEX 8747s on one NUMA")
+        print("        node - but is not guaranteed. The byte check below decides;")
+        print("        do not infer either way from the topology alone.")
 
     # Peer access must be enabled per ordered pair before cuMemcpyPeer is a
     # peer copy rather than a staged one.
@@ -423,8 +425,10 @@ def main():
     print("PASS: every ordered pair moved correct bytes.")
     print("Cross-check the driver actually took the BAR1 path:")
     print("  sudo dmesg | grep -i CMPUNLOCK_BAR1P2P")
-    print("A Gen2 x16 link tops out near 1.4 GB/s; far below that suggests the")
-    print("copy was staged through host memory rather than peer-to-peer.")
+    print("For scale: Gen2 x16 is ~8 GB/s theoretical. Peer traffic that has to")
+    print("cross the root complex has been measured at ~2.8 GB/s on two PEX 8747")
+    print("switches. Well under ~0.5 GB/s is the number to be suspicious of - that")
+    print("is the range a copy staged through host memory lands in.")
     return 0
 
 

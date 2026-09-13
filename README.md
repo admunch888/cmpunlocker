@@ -143,6 +143,25 @@ sudo dmesg | grep -i CMPUNLOCK_BAR1P2P
 and no PyTorch. It copies a per-direction keyed pattern between every ordered
 GPU pair, reads the destination back, and exits non-zero if any byte differs.
 
+**Verified configuration** (2026-09-13): 2x CMP 170HX 8GB on nvidia-open
+615.71.09, kernel 7.0.0-31, behind *two different* PLX PEX 8747 switches
+(`05:10.0` and `09:08.0`) on one NUMA node — **2.85 GB/s both directions**,
+268 MB verified per pair. A common switch is not required; peer traffic
+crossing the root complex works here.
+
+`NVreg_RegistryDwords` must actually be live for this to work, and that is not
+visible from `/etc/modprobe.d` alone — the driver loads from the initramfs:
+
+```bash
+grep -i registrydwords /proc/driver/nvidia/params
+# RegistryDwords: "RMForceStaticBar1=1;RMPcieP2PType=1;RmForceEnableGen2=1;RMPcieLinkSpeed=0x1"
+```
+
+An empty string there means the options never reached the driver. Without
+`RMForceStaticBar1` the BAR1 mapping gate declines while the forced read cap
+still advertises peer access, so `cuMemcpyPeer` returns success and transfers
+nothing. Run `sudo update-initramfs -u` and cold boot.
+
 ### PMA region fix (always on)
 
 The late-PMA extension is skipped on CMP cards. Publishing the highest reserved
