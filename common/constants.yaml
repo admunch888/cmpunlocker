@@ -55,6 +55,9 @@ unlocks:
       # FBPA_MEM gates the CONFIG0..CONFIG4 DRAM timing registers. Without it
       # open, host writes to them over BAR0 are dropped and read back unchanged.
       fbpa_mem_plm:   { addr: "0x009a0168", value: "0xffffffff" }
+      # HBMPLL gates the per-FBPA PLL CFG/COEFF registers. Closed, --mclk-ndiv
+      # aborts pre-GSP and its post-GSP COEFF write reads back unchanged.
+      hbmpll_plm:     { addr: "0x00903c7c", value: "0xffffffff" }
 
   compute_throughput:
     patch: sec2-postbl-plm-ss-cfg.patch
