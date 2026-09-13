@@ -74,13 +74,30 @@ fi
 # read-constants.py needs python3 + PyYAML. Fail loudly now, while the user is
 # watching, instead of at 3am during an unattended kernel upgrade.
 #
-if ! command -v python3 >/dev/null 2>&1; then
-    warn "python3 not found — kernel-update rebuilds will fail (build.sh needs it)"
-elif ! python3 -c "import yaml" >/dev/null 2>&1; then
-    warn "python3 PyYAML not found — kernel-update rebuilds will fail"
+# Probe the interpreter the rebuild service will actually use, not whatever is
+# first on the installing shell's PATH. A conda or venv python3 with PyYAML
+# installed says nothing about boot time: cmpunlocker-rebuild.service runs
+# under systemd's PATH and lands on the system interpreter.
+#
+SYSTEM_PY=""
+for cand in /usr/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "${cand}" ]]; then
+        SYSTEM_PY="${cand}"
+        break
+    fi
+done
+if [[ -z "${SYSTEM_PY}" ]]; then
+    warn "no system python3 found — kernel-update rebuilds will fail (build.sh needs it)"
+elif ! "${SYSTEM_PY}" -c "import yaml" >/dev/null 2>&1; then
+    warn "${SYSTEM_PY} cannot import yaml — kernel-update rebuilds will fail"
     warn "  install it with:  sudo apt install python3-yaml   (or dnf/pacman equivalent)"
+    if command -v python3 >/dev/null 2>&1 && [[ "$(command -v python3)" != "${SYSTEM_PY}" ]] \
+       && python3 -c "import yaml" >/dev/null 2>&1; then
+        warn "  note: $(command -v python3) does have PyYAML, but the boot service"
+        warn "  will not use it — the system interpreter is what needs the package"
+    fi
 else
-    ok "python3 + PyYAML present for kernel-update rebuilds"
+    ok "${SYSTEM_PY} has PyYAML for kernel-update rebuilds"
 fi
 
 #
