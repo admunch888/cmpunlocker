@@ -124,3 +124,74 @@ unlocks:
   cmp-sku-mask:
     patch: cmp-sku-mask.patch
     registers: {}
+
+  #
+  # Opt-in groups. build.sh appends these to PATCH_ORDER only for --mclk-ndiv
+  # and --p2p builds, so they carry an explicit group here.
+  #
+
+  hbm_clock_pre_gsp:
+    patch: mclk-clock-tuning-pre-gsp.patch
+    group: mclk
+    registers:
+      hbmpll_plm:        { addr: "0x00903C7C" }
+      hbmpll_coeff:      { addr: "0x00903C98" }
+      fbio_broadcast:    { addr: "0x009A0590" }
+      hbm_self_refresh:  { addr: "0x009A031C" }
+      ddll_cal_ctrl:     { addr: "0x009A11DC" }
+      ddll_cal_status_0: { addr: "0x009A0674" }
+      ddll_cal_status_1: { addr: "0x009A0678" }
+      fbpa_base:         { addr: "0x00900000" }
+      fbpa_stride:       { addr: "0x00004000" }
+      fbpa_cfg_offset:   { addr: "0x00003C90" }
+      fbpa_coeff_offset: { addr: "0x00003C98" }
+    requires:
+      # build.sh rewrites this exact line from --mclk-ndiv; the tree is left
+      # deliberately uncompilable until it does.
+      - "static const NvU32 newNdiv = XX;"
+
+  hbm_clock_post_gsp:
+    patch: mclk-clock-tuning-post-gsp.patch
+    group: mclk
+    registers:
+      hbmpll_plm:           { addr: "0x00903C7C" }
+      hbmpll_cfg:           { addr: "0x00903C90" }
+      hbmpll_coeff:         { addr: "0x00903C98" }
+      fbpa_coeff_multicast: { addr: "0x0098BC98" }
+      pri_fence:            { addr: "0x001211FC" }
+    requires:
+      - "static const NvU32 newNdiv = XX;"
+      - "_kgspSec2PostblTimingEnabled"
+
+  p2p_caps_override:
+    patch: p2p-caps-override.patch
+    group: p2p
+    registers: {}
+    requires:
+      - "pcieP2PReadCaps"
+      - "pcieP2PWriteCaps"
+
+  p2p_bar1:
+    patch: p2p-bar1.patch
+    group: p2p
+    registers: {}
+    requires:
+      - "NV_REG_STR_RM_PCIEP2P_TYPE_BAR1"
+      - "kbusIsPcieBar1P2PMappingSupported"
+
+  p2p_mailbox_skip:
+    patch: p2p-skip-mailbox-preinit.patch
+    group: p2p
+    registers: {}
+    requires:
+      # Gated on the registry-selected P2P type, not on a device id.
+      - "NV_REG_STR_RM_PCIEP2P_TYPE_BAR1"
+      - "kbusIsP2pMailboxClientAllocated"
+
+  p2p_readcap_override:
+    patch: p2p-readcap-override.patch
+    group: p2p
+    registers: {}
+    requires:
+      - "NV0000_P2P_CAPS_STATUS_OK"
+      - "bCommonPciSwitchFound"

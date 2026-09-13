@@ -29,12 +29,31 @@ def present(blob_lower, value):
     return any(re.search(re.escape(f) + r"u?\b", blob_lower) for f in forms)
 
 
-def read_patch_order(build_sh):
+# build.sh keeps the always-applied patches in PATCH_ORDER and appends the
+# opt-in groups only when --mclk-ndiv / --p2p ask for them. constants.yaml
+# names the group in each unlock so a patch cannot quietly move between an
+# always-on and an opt-in build.
+PATCH_ARRAYS = (("base", "PATCH_ORDER"),
+                ("mclk", "MCLK_PATCHES"),
+                ("p2p", "P2P_PATCHES"))
+
+
+def read_patch_arrays(build_sh):
     text = io.open(build_sh, encoding="utf-8").read()
-    m = re.search(r"PATCH_ORDER=\(\n(.*?)\n\)", text, re.S)
-    if not m:
-        sys.exit("error: PATCH_ORDER not found in %s" % build_sh)
-    return [l.strip() for l in m.group(1).splitlines() if l.strip()]
+    built = {}
+    for group, array in PATCH_ARRAYS:
+        m = re.search(array + r"=\(\n(.*?)\n\)", text, re.S)
+        if not m:
+            sys.exit("error: %s not found in %s" % (array, build_sh))
+        for line in m.group(1).splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            if name in built:
+                sys.exit("error: %s appears in more than one patch array in %s"
+                         % (name, build_sh))
+            built[name] = group
+    return built
 
 
 def main():
@@ -60,16 +79,33 @@ def main():
     if not unlocks:
         sys.exit("error: constants.yaml declares no unlocks")
 
-    order = read_patch_order(build_sh)
-    declared = {u["patch"] for u in unlocks.values() if u.get("patch")}
+    built = read_patch_arrays(build_sh)
+    groups = dict(PATCH_ARRAYS)
+    declared = {}
 
     problems = []
-    for name in sorted(set(order) - declared):
+    for uname in sorted(unlocks):
+        u = unlocks[uname] or {}
+        pname = u.get("patch")
+        if not pname:
+            continue
+        group = u.get("group", "base")
+        if group not in groups:
+            problems.append("unlock %s: unknown group %r (expected one of %s)"
+                            % (uname, group, ", ".join(sorted(groups))))
+            continue
+        declared[pname] = group
+
+    for name in sorted(set(built) - set(declared)):
         problems.append("patch %s is built but not declared in constants.yaml"
                         % name)
-    for name in sorted(declared - set(order)):
-        problems.append("constants.yaml declares %s but it is not in "
-                        "PATCH_ORDER" % name)
+    for name in sorted(set(declared) - set(built)):
+        problems.append("constants.yaml declares %s but no patch array in "
+                        "build.sh builds it" % name)
+    for name in sorted(set(declared) & set(built)):
+        if declared[name] != built[name]:
+            problems.append("constants.yaml puts %s in group %r but build.sh "
+                            "builds it in %r" % (name, declared[name], built[name]))
 
     cache = {}
     for uname in sorted(unlocks):
@@ -83,9 +119,20 @@ def main():
             problems.append("unlock %s: missing %s" % (uname, ppath))
             continue
         if ppath not in cache:
-            cache[ppath] = io.open(ppath, encoding="utf-8",
-                                   errors="replace").read().lower()
-        blob = cache[ppath]
+            raw = io.open(ppath, encoding="utf-8", errors="replace").read()
+            cache[ppath] = (raw, raw.lower())
+        raw, blob = cache[ppath]
+
+        #
+        # Not every patch is a register poke. The P2P set gates on RM symbols
+        # and the HBM set on a build.sh placeholder, so `requires` pins the
+        # literal text those patches depend on: if upstream renames a symbol
+        # the check fails here instead of the patch applying but doing nothing.
+        #
+        for token in (u.get("requires") or []):
+            if token not in raw:
+                problems.append("unlock %s: required text %r not found in %s"
+                                % (uname, token, pname))
         for rname, r in sorted((u.get("registers") or {}).items()):
             addr = r.get("addr")
             if not addr or not present(blob, addr):
