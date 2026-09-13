@@ -124,7 +124,10 @@ is the verified-good state.
 
 ### DRAM timings (`--refresh=N`)
 
-Sets the FBPA `tRFC` (refresh cycle time) to N cycles on every card.
+Sets the FBPA **`REFRESH`** field (`CONFIG4`) on every card — the field
+`fbpa_regs` reports by that name, not `RFC`/tRFC in `CONFIG0`. Stock on a
+CMP 170HX 8GB is **6**; `RFC` is a separate field at **657** cycles and the
+controller rejects out-of-range writes to it.
 
 This is **not** compiled into the driver. The FBPA `CONFIG0..CONFIG4`
 registers are volatile, so a reboot restores the VBIOS table — a bad value
@@ -136,7 +139,7 @@ in `/etc/cmpunlocker/timings.conf` and replayed at each boot by
 ```bash
 sudo ./install.sh --mclk-ndiv=70 --refresh=24
 # after reboot
-/usr/lib/cmpunlocker/fbpa_regs get RFC
+fbpa_regs get REFRESH
 systemctl status cmpunlocker-timings
 ```
 
@@ -144,9 +147,10 @@ Needs the `fbpa_regs` helper from `overclocking/timings`; `install.sh` builds
 it if the sources are present, and the service reports loudly if it is missing
 rather than skipping silently.
 
-**`tRFC` holds cycles, not nanoseconds.** Its safe range therefore moves with
-`--mclk-ndiv`: raising the clock tightens every timing in absolute time. Read
-the stock value before changing it (`fbpa_regs get RFC`), and validate with
+**Refresh governs how often DRAM cells are topped up**, so changing it trades
+retention margin for bandwidth, and the margin also moves with `--mclk-ndiv`
+because these fields hold cycles rather than nanoseconds. Read the stock value
+before changing it (`fbpa_regs get REFRESH`), and validate with
 `gpu_burn` reporting **zero** errors — a too-low `tRFC` does not fail loudly,
 it loses charge in DRAM cells and returns wrong data. `overclocking/timings/`
 has the measured sensitivity of every field; on this card bandwidth is

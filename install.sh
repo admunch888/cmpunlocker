@@ -43,16 +43,17 @@ Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
   --mclk-ndiv=N   Compile an HBM2e PLL target from NDIV 30-80 (N × 27 MHz).
                   Values below the VBIOS NDIV downclock; values above it
                   overclock. Omit the flag to preserve the VBIOS clock.
-  --refresh=N     Set the FBPA tRFC (refresh cycle time) to N cycles on every
-                  card, applied at each boot by cmpunlocker-timings.service.
+  --refresh=N     Set the FBPA REFRESH field (CONFIG4) to N on every card,
+                  applied at each boot by cmpunlocker-timings.service. This is
+                  the REFRESH field fbpa_regs reports, not RFC/tRFC in CONFIG0.
                   This is NOT compiled into the driver: the FBPA CONFIG
                   registers are volatile, so a reboot restores the VBIOS
                   table and a bad value costs one reboot, not a reinstall.
                   Needs the fbpa_regs helper from overclocking/timings.
-                  tRFC holds cycles, not nanoseconds, so its safe range moves
-                  with --mclk-ndiv. Too low a value does not fail loudly - it
-                  loses charge in DRAM cells and returns wrong data. Read the
-                  stock value first (fbpa_regs get RFC) and validate any
+                  Refresh governs how often DRAM cells are topped up, so
+                  changing it trades retention margin for bandwidth and does
+                  not fail loudly when wrong - it returns bad data. Read the
+                  stock value first (fbpa_regs get REFRESH) and validate any
                   change with gpu_burn reporting zero errors.
   --p2p           Enable CMP-only BAR1 peer access. Requires a compatible PCIe
                   topology; verify with cudaDeviceCanAccessPeer and real copies.
@@ -88,6 +89,14 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 source "${SCRIPT_DIR}/common/lib.sh"
 
 banner
+# REFRESH lives in CONFIG4 and fbpa_regs reports it as a small integer
+# (stock 6 on this card), so reject anything that cannot be one.
+if [[ -n "${REFRESH_RFC}" ]]; then
+    if ! [[ "${REFRESH_RFC}" =~ ^[0-9]+$ ]] || (( REFRESH_RFC < 1 || REFRESH_RFC > 255 )); then
+        die "--refresh must be an integer from 1 through 255 (CONFIG4 REFRESH field)"
+    fi
+fi
+
 step_init 10
 
 step "Verifying root privileges"
@@ -367,24 +376,24 @@ if [[ -n "${REFRESH_RFC}" ]]; then
         /usr/lib/cmpunlocker/apply-timings.sh
     printf '# written by install.sh --refresh=%s\n' "${REFRESH_RFC}" \
         > /etc/cmpunlocker/timings.conf
-    printf 'RFC=%s\n' "${REFRESH_RFC}" >> /etc/cmpunlocker/timings.conf
+    printf 'REFRESH=%s\n' "${REFRESH_RFC}" >> /etc/cmpunlocker/timings.conf
     install -m 0644 "${SCRIPT_DIR}/systemd/cmpunlocker-timings.service" \
         /etc/systemd/system/cmpunlocker-timings.service
     systemctl daemon-reload
     systemctl enable cmpunlocker-timings.service >/dev/null 2>&1 || true
-    ok "tRFC=${REFRESH_RFC} will be applied at each boot (cmpunlocker-timings.service)"
-    warn "tRFC is in cycles and is NOT validated by this installer. Check the"
+    ok "REFRESH=${REFRESH_RFC} will be applied at each boot (cmpunlocker-timings.service)"
+    warn "REFRESH is NOT validated by this installer. Check the"
     warn "stock value and confirm it took after reboot:"
-    warn "  /usr/lib/cmpunlocker/fbpa_regs get RFC"
+    warn "  fbpa_regs get REFRESH"
     warn "  systemctl status cmpunlocker-timings"
     warn "Validate with gpu_burn reporting zero errors before trusting it; a"
-    warn "too-low tRFC corrupts data silently rather than failing."
-    TIMINGS_STATUS="RFC=${REFRESH_RFC}"
+    warn "wrong REFRESH value corrupts data silently rather than failing."
+    TIMINGS_STATUS="REFRESH=${REFRESH_RFC}"
 else
     systemctl disable --now cmpunlocker-timings.service 2>/dev/null || true
     rm -f /etc/systemd/system/cmpunlocker-timings.service /etc/cmpunlocker/timings.conf
     systemctl daemon-reload 2>/dev/null || true
-    info "DRAM timings left at stock (use --refresh=N to set tRFC)"
+    info "DRAM timings left at stock (use --refresh=N to set REFRESH)"
 fi
 
 step "Surviving kernel updates"
