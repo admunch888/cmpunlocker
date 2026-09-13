@@ -159,6 +159,32 @@ controller unrecoverably.
 
 To revert: reinstall without `--refresh` (or `remove.sh`), then reboot.
 
+#### Privilege masks these need
+
+`--mclk-ndiv` and `--refresh` both write registers that sit behind SEC2
+privilege masks, opened by `sec2-postbl-plm-ss-cfg.patch` in the post-Booter
+window (before `kgspBootstrap`, so the pre-GSP clock hook sees them open):
+
+| PLM | Gates | Symptom when closed |
+|---|---|---|
+| `0x009a0168` FBPA_MEM | `CONFIG0..CONFIG4` DRAM timings | `fbpa_regs set` reports READBACK MISMATCH |
+| `0x00903c7c` HBMPLL | per-FBPA PLL `CFG`/`COEFF` | `HBMPLL_OC: aborted, PLM=... (bit4 closed)` |
+
+Bit 4 is `WRITE_PROTECTION_LEVEL0`, which is where host BAR0 writes arrive. A
+closed mask reads back fine and drops writes silently, so a value can look
+applied at every layer above and change nothing — check the mask before
+concluding a register is unwritable:
+
+```bash
+fbpa_regs read 0x009a0168     # expect 0xFFFFFFFF
+fbpa_regs read 0x00903c7c     # expect 0xFFFFFFFF
+```
+
+Confirmed applying on nvidia-open 615.71.09, 2x CMP 170HX 8GB (VBIOS
+`92.00.6D.00.0A`, stock NDIV 64): `--mclk-ndiv=70` takes on all 8 FBPAs per
+card with `lock=1`, and `--refresh=24` reads back on both. Applying is not the
+same as stable — qualify with `gpu_burn`.
+
 ### P2P (`--p2p`)
 
 Opt-in. Enables real BAR1 peer access for CMP 170HX/220HX by overriding the GSP
