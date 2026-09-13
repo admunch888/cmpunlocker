@@ -92,9 +92,41 @@ CMPUNLOCKER_ENABLE_P2P="${CMPUNLOCKER_ENABLE_P2P:-}" \
 CMPUNLOCKER_VERBOSE="${CMPUNLOCKER_VERBOSE:-0}" \
     "${PAYLOAD_DIR}/driver/build.sh" || fail "build failed for ${KVER}"
 
-if [[ ! -f "/lib/modules/${KVER}/updates/cmpunlocker/nvidia.ko" ]]; then
+MOD_DIR="/lib/modules/${KVER}/updates/cmpunlocker"
+if [[ ! -f "${MOD_DIR}/nvidia.ko" ]]; then
     fail "build reported success but nvidia.ko is missing for ${KVER}"
 fi
+
+#
+# Confirm the rebuild carried the options forward, rather than assuming it did.
+# build.sh stamps what it actually built into the module directory, so a
+# rebuild that silently dropped the overclock or P2P - an empty build.conf, a
+# stale payload, a flag that stopped being honoured - is visible here instead
+# of at the next boot as a card quietly running at stock.
+#
+want_ndiv="${CMPUNLOCKER_MCLK_NDIV:-stock}"
+[[ -z "${want_ndiv}" ]] && want_ndiv="stock"
+want_p2p=""
+[[ -n "${CMPUNLOCKER_ENABLE_P2P:-}" ]] && want_p2p="enabled"
+
+drift=""
+check_marker() {
+    local name="$1" want="$2" got=""
+    [[ -r "${MOD_DIR}/${name}" ]] && got="$(tr -d '[:space:]' < "${MOD_DIR}/${name}")"
+    if [[ "${got}" != "${want}" ]]; then
+        log "WARN: ${name} is '${got:-<empty>}' but build.conf asked for '${want:-<none>}'"
+        drift="yes"
+    fi
+}
+check_marker mclk_ndiv "${want_ndiv}"
+check_marker p2p       "${want_p2p}"
+[[ -n "${CMPUNLOCKER_DRIVER_VERSION:-}" ]] && \
+    check_marker driver_version "${CMPUNLOCKER_DRIVER_VERSION}"
+
+if [[ -n "${drift}" ]]; then
+    fail "rebuilt modules do not match ${CONF_FILE} (see the mismatches above)"
+fi
+log "verified: mclk=${want_ndiv} p2p=${want_p2p:-off}"
 
 rm -f "${MARKER}"
 log "OK: patched modules installed for ${KVER}"
