@@ -252,6 +252,18 @@ def main():
 
     # Peer access must be enabled per ordered pair before cuMemcpyPeer is a
     # peer copy rather than a staged one.
+    # Probe each context once before doing any work. A failure here means the
+    # context or its binding is wrong, and separates that from a copy that
+    # genuinely broke something.
+    for i in range(len(devs)):
+        rc = cu.cuCtxSetCurrent(ctxs[i])
+        rc2 = cu.cuCtxSynchronize()
+        if args.debug or rc != CUDA_SUCCESS or rc2 != CUDA_SUCCESS:
+            print("  ctx[%d] handle=0x%x setcurrent=%d synchronize=%d"
+                  % (i, ctxs[i].value or 0, rc, rc2))
+        if rc != CUDA_SUCCESS:
+            sys.exit("error: cannot make context %d current (%d)" % (i, rc))
+
     print("\nEnabling peer access")
     reachable = {}
     for i in range(len(devs)):
@@ -306,11 +318,9 @@ def main():
             cu.check(cu.cuMemcpyHtoD(bufs[j], ctypes.cast(ctypes.c_char_p(sentinel),
                                                            ctypes.c_void_p),
                                      ctypes.c_size_t(nbytes)), "cuMemcpyHtoD dst sentinel")
-            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
 
             cu.check(cu.cuMemcpyPeer(bufs[j], ctxs[j], bufs[i], ctxs[i],
                                      ctypes.c_size_t(nbytes)), "cuMemcpyPeer")
-            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
 
             cu.check(cu.cuCtxSetCurrent(ctxs[j]), "cuCtxSetCurrent")
             cu.check(cu.cuMemcpyDtoH(ctypes.cast(host_out, ctypes.c_void_p), bufs[j],
@@ -328,7 +338,6 @@ def main():
             for _ in range(args.iters):
                 cu.check(cu.cuMemcpyPeer(bufs[j], ctxs[j], bufs[i], ctxs[i],
                                          ctypes.c_size_t(nbytes)), "cuMemcpyPeer timed")
-            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
             elapsed = time.perf_counter() - start
             gbps = (nbytes * args.iters) / elapsed / 1e9
             print("%-12s %-10s %-12s %s" % (label, "OK", "%.2f GB/s" % gbps,
