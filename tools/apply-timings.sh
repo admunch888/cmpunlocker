@@ -56,6 +56,11 @@ if [[ -z "${TOOL}" ]]; then
     exit 1
 fi
 log "using ${TOOL}"
+if [[ ! -x /usr/lib/cmpunlocker/fbpa_regs && "${TOOL}" != "/usr/lib/cmpunlocker/fbpa_regs" ]]; then
+    log "note: /usr/lib/cmpunlocker/fbpa_regs absent — install.sh could not build it"
+    log "      (overclocking/timings/fbpa_regs.c is not in this repo); using the"
+    log "      copy found above instead"
+fi
 
 mapfile -t GPUS < <("${TOOL}" list 2>/dev/null |
                     grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]' || true)
@@ -88,9 +93,15 @@ for bdf in "${GPUS[@]}"; do
             rc=1
             continue
         fi
-        before="$("${TOOL}" -b "${bdf}" get "${field}" 2>/dev/null || echo '?')"
-        if ! "${TOOL}" -b "${bdf}" set "${field}" "${value}" >/dev/null 2>&1; then
-            warn "${bdf}: ${field}=${value} write failed"
+        before="$("${TOOL}" -b "${bdf}" get "${field}" 2>&1 || echo '?')"
+        #
+        # Keep the helper's own diagnostics. Discarding them turns "the PLM is
+        # closed" and "that field does not exist" into the same unactionable
+        # line, which is the whole difficulty in debugging a failed write.
+        #
+        if ! set_err="$("${TOOL}" -b "${bdf}" set "${field}" "${value}" 2>&1)"; then
+            warn "${bdf}: ${field}=${value} write failed (current ${before})"
+            [[ -n "${set_err}" ]] && warn "${bdf}: fbpa_regs said: ${set_err//$'\n'/ | }"
             rc=1
             continue
         fi
@@ -99,7 +110,7 @@ for bdf in "${GPUS[@]}"; do
         # read-only *_GEN mirror the controller updates, so a write that did not
         # take is visible instead of assumed.
         #
-        after="$("${TOOL}" -b "${bdf}" get "${field}" 2>/dev/null || echo '?')"
+        after="$("${TOOL}" -b "${bdf}" get "${field}" 2>&1 || echo '?')"
         if [[ "${after}" != "${value}" ]]; then
             warn "${bdf}: ${field} read back as ${after}, wanted ${value} (was ${before})"
             rc=1
