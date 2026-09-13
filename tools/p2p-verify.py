@@ -40,22 +40,75 @@ def load_libcuda():
     sys.exit("error: libcuda.so.1 not found — is the NVIDIA driver installed and loaded?")
 
 
+CUresult = ctypes.c_int
+CUdevice = ctypes.c_int
+CUcontext = ctypes.c_void_p
+CUdeviceptr = ctypes.c_ulonglong
+
+
 class Cuda:
+    """
+    Thin libcuda binding.
+
+    Two things matter here. Every entry point gets explicit argtypes, because
+    ctypes defaults to C int and would truncate the 64-bit pointers and
+    size_t. And each symbol is resolved as <name>_v2 first: libcuda keeps the
+    pre-CUDA-3.2 ABI under the plain name (32-bit sizes) and the current one
+    under _v2, which is what the headers #define the plain name to. Calling
+    the plain symbol gets the legacy signature and fails with
+    CUDA_ERROR_INVALID_CONTEXT.
+    """
+
+    SIGNATURES = {
+        "cuGetErrorString":         [CUresult, ctypes.POINTER(ctypes.c_char_p)],
+        "cuInit":                   [ctypes.c_uint],
+        "cuDeviceGetCount":         [ctypes.POINTER(ctypes.c_int)],
+        "cuDeviceGet":              [ctypes.POINTER(CUdevice), ctypes.c_int],
+        "cuDeviceGetName":          [ctypes.c_char_p, ctypes.c_int, CUdevice],
+        "cuDeviceGetPCIBusId":      [ctypes.c_char_p, ctypes.c_int, CUdevice],
+        "cuDevicePrimaryCtxRetain": [ctypes.POINTER(CUcontext), CUdevice],
+        "cuCtxSetCurrent":          [CUcontext],
+        "cuCtxSynchronize":         [],
+        "cuDeviceCanAccessPeer":    [ctypes.POINTER(ctypes.c_int), CUdevice, CUdevice],
+        "cuCtxEnablePeerAccess":    [CUcontext, ctypes.c_uint],
+        "cuMemAlloc":               [ctypes.POINTER(CUdeviceptr), ctypes.c_size_t],
+        "cuMemFree":                [CUdeviceptr],
+        "cuMemcpyHtoD":             [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t],
+        "cuMemcpyDtoH":             [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t],
+        "cuMemcpyPeer":             [CUdeviceptr, CUcontext, CUdeviceptr, CUcontext,
+                                     ctypes.c_size_t],
+    }
+
     def __init__(self):
+        self._fns = {}
         self.lib = load_libcuda()
-        self.lib.cuGetErrorString.argtypes = [ctypes.c_int,
-                                              ctypes.POINTER(ctypes.c_char_p)]
+        for name, argtypes in self.SIGNATURES.items():
+            fn = None
+            for sym in (name + "_v2", name):
+                try:
+                    fn = getattr(self.lib, sym)
+                    break
+                except AttributeError:
+                    continue
+            if fn is None:
+                sys.exit("error: %s not found in libcuda — driver too old?" % name)
+            fn.argtypes = argtypes
+            fn.restype = CUresult
+            self._fns[name] = fn
 
     def check(self, rc, what):
         if rc == CUDA_SUCCESS:
             return
         msg = ctypes.c_char_p()
-        self.lib.cuGetErrorString(rc, ctypes.byref(msg))
+        self._fns["cuGetErrorString"](rc, ctypes.byref(msg))
         detail = msg.value.decode() if msg.value else "unknown"
         sys.exit("error: %s failed: %s (%d)" % (what, detail, rc))
 
     def __getattr__(self, name):
-        return getattr(self.lib, name)
+        fns = self.__dict__.get("_fns", {})
+        if name in fns:
+            return fns[name]
+        raise AttributeError(name)
 
 
 def pci_bus_id(cu, dev):
@@ -136,14 +189,14 @@ def main():
 
     devs, ctxs, info = [], [], []
     for ordinal in range(count.value):
-        dev = ctypes.c_int()
+        dev = CUdevice()
         cu.check(cu.cuDeviceGet(ctypes.byref(dev), ordinal), "cuDeviceGet")
         bus = pci_bus_id(cu, dev)
         devid = lspci_device_id(bus)
         if not args.all_gpus and devid not in CMP_DEVICE_IDS:
             print("skip  GPU%d %s (10de:%s) — not a CMP 170HX" % (ordinal, bus, devid))
             continue
-        ctx = ctypes.c_void_p()
+        ctx = CUcontext()
         cu.check(cu.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev),
                  "cuDevicePrimaryCtxRetain")
         devs.append(dev)
@@ -192,7 +245,7 @@ def main():
     bufs = []
     for i in range(len(devs)):
         cu.check(cu.cuCtxSetCurrent(ctxs[i]), "cuCtxSetCurrent")
-        ptr = ctypes.c_ulonglong()
+        ptr = CUdeviceptr()
         cu.check(cu.cuMemAlloc(ctypes.byref(ptr), ctypes.c_size_t(nbytes)), "cuMemAlloc")
         bufs.append(ptr)
 
@@ -217,11 +270,13 @@ def main():
             # Source gets the pattern; destination gets a sentinel, so a copy
             # that never lands is a failure rather than a lucky match.
             cu.check(cu.cuCtxSetCurrent(ctxs[i]), "cuCtxSetCurrent")
-            cu.check(cu.cuMemcpyHtoD(bufs[i], pattern, ctypes.c_size_t(nbytes)),
-                     "cuMemcpyHtoD src")
+            cu.check(cu.cuMemcpyHtoD(bufs[i], ctypes.cast(ctypes.c_char_p(pattern),
+                                                           ctypes.c_void_p),
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyHtoD src")
             cu.check(cu.cuCtxSetCurrent(ctxs[j]), "cuCtxSetCurrent")
-            cu.check(cu.cuMemcpyHtoD(bufs[j], sentinel, ctypes.c_size_t(nbytes)),
-                     "cuMemcpyHtoD dst sentinel")
+            cu.check(cu.cuMemcpyHtoD(bufs[j], ctypes.cast(ctypes.c_char_p(sentinel),
+                                                           ctypes.c_void_p),
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyHtoD dst sentinel")
             cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
 
             cu.check(cu.cuMemcpyPeer(bufs[j], ctxs[j], bufs[i], ctxs[i],
@@ -229,8 +284,8 @@ def main():
             cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
 
             cu.check(cu.cuCtxSetCurrent(ctxs[j]), "cuCtxSetCurrent")
-            cu.check(cu.cuMemcpyDtoH(host_out, bufs[j], ctypes.c_size_t(nbytes)),
-                     "cuMemcpyDtoH")
+            cu.check(cu.cuMemcpyDtoH(ctypes.cast(host_out, ctypes.c_void_p), bufs[j],
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyDtoH")
             got = memoryview(host_out)[:nbytes]
             if got != memoryview(pattern):
                 bad = next((k for k in range(nbytes) if got[k] != pattern[k]), -1)
