@@ -59,6 +59,11 @@ class Cuda:
     CUDA_ERROR_INVALID_CONTEXT.
     """
 
+    # Only these four have a v2 ABI in libcuda (the pre-CUDA-3.2 originals took
+    # 32-bit sizes). Probing "<name>_v2" for everything risks binding an
+    # unrelated versioned symbol, so the list is explicit.
+    V2_SYMBOLS = {"cuMemAlloc", "cuMemFree", "cuMemcpyHtoD", "cuMemcpyDtoH"}
+
     SIGNATURES = {
         "cuGetErrorString":         [CUresult, ctypes.POINTER(ctypes.c_char_p)],
         "cuInit":                   [ctypes.c_uint],
@@ -82,11 +87,14 @@ class Cuda:
     def __init__(self):
         self._fns = {}
         self.lib = load_libcuda()
+        self.bound = {}
         for name, argtypes in self.SIGNATURES.items():
+            candidates = ([name + "_v2", name] if name in self.V2_SYMBOLS else [name])
             fn = None
-            for sym in (name + "_v2", name):
+            for sym in candidates:
                 try:
                     fn = getattr(self.lib, sym)
+                    self.bound[name] = sym
                     break
                 except AttributeError:
                     continue
@@ -102,7 +110,21 @@ class Cuda:
         msg = ctypes.c_char_p()
         self._fns["cuGetErrorString"](rc, ctypes.byref(msg))
         detail = msg.value.decode() if msg.value else "unknown"
-        sys.exit("error: %s failed: %s (%d)" % (what, detail, rc))
+        lines = ["error: %s failed: %s (%d)" % (what, detail, rc)]
+        if rc in (709, 999, 4):
+            # 709 CONTEXT_IS_DESTROYED / 999 UNKNOWN / 4 DEINITIALIZED all show up
+            # when the GPU itself faulted mid-operation rather than when the call
+            # was malformed.
+            lines += [
+                "",
+                "That class of error usually means the device faulted during the",
+                "operation rather than that the call was wrong. Check for an Xid:",
+                "    sudo dmesg | grep -iE 'xid|nvrm' | tail -30",
+                "    nvidia-smi -q | grep -iE 'pending|retired|remap|ecc'",
+                "and retry smaller to see if it is size-dependent:",
+                "    sudo ./tools/p2p-verify.py --size-mb 16 --iters 1",
+            ]
+        sys.exit("\n".join(lines))
 
     def __getattr__(self, name):
         fns = self.__dict__.get("_fns", {})
@@ -174,12 +196,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--size-mb", type=int, default=256, help="buffer size per copy")
     ap.add_argument("--iters", type=int, default=5, help="timed iterations per direction")
+    ap.add_argument("--debug", action="store_true",
+                    help="print the libcuda symbol bound for each entry point")
     ap.add_argument("--all-gpus", action="store_true",
                     help="include non-CMP GPUs instead of only 10de:20c2/2082")
     args = ap.parse_args()
 
     nbytes = args.size_mb * 1024 * 1024
     cu = Cuda()
+    if args.debug:
+        print("libcuda bindings")
+        for name in sorted(cu.bound):
+            print("  %-26s -> %s" % (name, cu.bound[name]))
+        print()
     cu.check(cu.cuInit(0), "cuInit")
 
     count = ctypes.c_int()
