@@ -26,6 +26,10 @@ import time
 
 CMP_DEVICE_IDS = {"20c2", "2082"}
 
+# Gen3 x16 is ~16 GB/s and Gen2 x16 ~8 GB/s, so anything past this is not a
+# transfer rate - it means the copy was still in flight when the clock stopped.
+PCIE_CEILING_GBPS = 30.0
+
 # CUresult values we special-case
 CUDA_SUCCESS = 0
 CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED = 704
@@ -370,14 +374,26 @@ def main():
                 failures.append("%s %s: %s" % (label, verdict.lower(), detail))
                 continue
 
+            #
+            # cuMemcpyPeer is only synchronous with respect to the host when one
+            # side is host memory. Device-to-device it may return as soon as the
+            # copy is enqueued, so the clock has to be closed on a synchronise or
+            # this measures launch overhead and reports hundreds of GB/s over a
+            # link that tops out in single digits.
+            #
+            cu.check(cu.cuCtxSetCurrent(ctxs[j]), "cuCtxSetCurrent")
+            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
             start = time.perf_counter()
             for _ in range(args.iters):
                 cu.check(cu.cuMemcpyPeer(bufs[j], ctxs[j], bufs[i], ctxs[i],
                                          ctypes.c_size_t(nbytes)), "cuMemcpyPeer timed")
+            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
             elapsed = time.perf_counter() - start
             gbps = (nbytes * args.iters) / elapsed / 1e9
-            print("%-12s %-10s %-12s %s" % (label, "OK", "%.2f GB/s" % gbps,
-                                            "all %d bytes verified" % nbytes))
+            note = "all %d bytes verified" % nbytes
+            if gbps > PCIE_CEILING_GBPS:
+                note += " — BANDWIDTH IMPLAUSIBLE, treat as unmeasured"
+            print("%-12s %-10s %-12s %s" % (label, "OK", "%.2f GB/s" % gbps, note))
 
     for i in range(len(devs)):
         cu.cuCtxSetCurrent(ctxs[i])
