@@ -278,12 +278,37 @@ options nvidia NVreg_RegistryDwords="${P2P_DWORDS}${GEN2_DWORDS}"
 EOF
 # Single source of truth: modprobe processes files lexically and the last one
 # wins, so any stale per-feature file would silently drop the other setting.
-rm -f /etc/modprobe.d/cmp-pcie-gen2.conf /etc/modprobe.d/cmpunlocker-p2p.conf
+# The .new/.bak suffixes are here because modprobe only reads *.conf: such a
+# file is inert, but it reads as if it were configuring something.
+rm -f /etc/modprobe.d/cmp-pcie-gen2.conf \
+      /etc/modprobe.d/cmpunlocker-p2p.conf \
+      /etc/modprobe.d/cmpunlocker-p2p.conf.new \
+      /etc/modprobe.d/cmpunlocker-p2p.conf.bak
 if [[ -n "${ENABLE_P2P}" ]]; then
     ok "Wrote ${MODPROBE_OPTS_FILE} (Gen2 + P2P)"
 else
     ok "Wrote ${MODPROBE_OPTS_FILE} (Gen2)"
 fi
+
+#
+# The initramfs has to be rebuilt AFTER this file exists, not before. build.sh
+# rebuilds it while installing the modules, which is two steps earlier, so
+# without this the dwords are absent from the initramfs the next boot uses and
+# the driver comes up without them. RMForceStaticBar1/RMPcieP2PType arriving
+# late is indistinguishable from P2P being unsupported: the BAR1 gate declines
+# and the forced caps still advertise it.
+#
+info "Rebuilding initramfs so the module options are present at boot..."
+if command -v update-initramfs &>/dev/null; then
+    update-initramfs -u -k "$(uname -r)" || warn "update-initramfs failed"
+elif command -v dracut &>/dev/null; then
+    dracut --force --kver "$(uname -r)" || warn "dracut failed"
+elif command -v mkinitcpio &>/dev/null; then
+    mkinitcpio -P || warn "mkinitcpio failed"
+else
+    warn "no initramfs tool found — module options may not apply until you rebuild it"
+fi
+ok "initramfs rebuilt with ${MODPROBE_OPTS_FILE}"
 
 for legacy_unit in cmpretrain.service cmp-gen2-retrain.service; do
     systemctl disable --now "${legacy_unit}" 2>/dev/null || true
