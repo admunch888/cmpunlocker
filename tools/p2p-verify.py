@@ -192,6 +192,18 @@ def keyed_pattern(nbytes, src, dst):
     return (bytes(block) * reps)[:nbytes]
 
 
+def is_untouched(host_buf, nbytes, fill=0xA5):
+    """True if the destination still holds only the pre-fill sentinel.
+
+    cuMemcpyPeer can return CUDA_SUCCESS and move nothing when the cap was
+    forced on but the PCIe path cannot actually carry peer traffic. That is a
+    different fault from garbled data and points somewhere else, so it is
+    reported separately.
+    """
+    got = memoryview(host_buf).cast("B")[:nbytes]
+    return all(got[k] == fill for k in range(nbytes))
+
+
 def first_mismatch(host_buf, want, nbytes):
     """Index of the first differing byte, or -1 if identical.
 
@@ -345,11 +357,17 @@ def main():
                                      ctypes.c_size_t(nbytes)), "cuMemcpyDtoH")
             bad = first_mismatch(host_out, pattern, nbytes)
             if bad >= 0:
-                detail = "first mismatch at byte %d (got 0x%02x want 0x%02x)" % (
-                    bad, host_out[bad][0] if isinstance(host_out[bad], bytes)
-                    else host_out[bad], pattern[bad])
-                print("%-12s %-10s %-12s %s" % (label, "CORRUPT", "-", detail))
-                failures.append("%s corrupt: %s" % (label, detail))
+                if is_untouched(host_out, nbytes):
+                    verdict = "NO-OP"
+                    detail = ("destination untouched — the copy reported success "
+                              "but moved nothing")
+                else:
+                    verdict = "CORRUPT"
+                    got_b = memoryview(host_out).cast("B")
+                    detail = "first mismatch at byte %d (got 0x%02x want 0x%02x)" % (
+                        bad, got_b[bad], pattern[bad])
+                print("%-12s %-10s %-12s %s" % (label, verdict, "-", detail))
+                failures.append("%s %s: %s" % (label, verdict.lower(), detail))
                 continue
 
             start = time.perf_counter()
@@ -371,8 +389,19 @@ def main():
             len(failures), len(devs) * (len(devs) - 1)))
         for f in failures:
             print("  - %s" % f)
-        print("\nP2P is NOT safe to rely on. Reinstall without --p2p:")
-        print("  sudo ./install.sh   # omit --p2p")
+        print("\nP2P is NOT safe to rely on here. Reinstall without it:")
+        print("  sudo ./install.sh   # omit --p2p, keeps the memory unlock")
+        if len({b for _, _, _, b in info}) > 1:
+            print("\nThe cards are behind different upstream bridges, so peer")
+            print("traffic has to climb to the root complex. Two things make that")
+            print("fail silently, both worth checking before giving up on P2P:")
+            print("  - ACS on the switches forces peer DMA through the IOMMU.")
+            print("    Separate IOMMU groups per card means it is on:")
+            print("      for d in /sys/kernel/iommu_groups/*/devices/*; do echo $d; done \\")
+            print("        | grep -E '$(lspci -Dn | awk \'/10de:20c2|10de:2082/{print $1}\' \\")
+            print("          | paste -sd\\|)'")
+            print("  - Moving the cards behind one switch removes the hop entirely")
+            print("    and matches the topology the read-cap override assumes.")
         return 1
 
     print("PASS: every ordered pair moved correct bytes.")

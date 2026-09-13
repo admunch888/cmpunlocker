@@ -56,3 +56,19 @@ def test_only_the_first_nbytes_are_compared():
     tail = bytearray(data)
     tail[-1] ^= 0xFF
     assert p2p.first_mismatch(buf(bytes(tail)), data, N - 1) == -1
+
+
+def test_untouched_sentinel_is_recognised():
+    # The observed failure: cuMemcpyPeer returns success and moves nothing, so
+    # the destination still holds the whole 0xA5 pre-fill.
+    assert p2p.is_untouched(buf(b"\xA5" * N), N)
+
+
+def test_partially_written_destination_is_not_called_untouched():
+    d = bytearray(b"\xA5" * N)
+    d[N // 2] = 0x00
+    assert not p2p.is_untouched(buf(bytes(d)), N)
+
+
+def test_real_data_is_not_called_untouched():
+    assert not p2p.is_untouched(buf(p2p.keyed_pattern(N, 0, 1)), N)
