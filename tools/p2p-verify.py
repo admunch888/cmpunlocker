@@ -192,6 +192,24 @@ def keyed_pattern(nbytes, src, dst):
     return (bytes(block) * reps)[:nbytes]
 
 
+def first_mismatch(host_buf, want, nbytes):
+    """Index of the first differing byte, or -1 if identical.
+
+    Both sides are cast to unsigned-byte format first. A ctypes buffer's
+    memoryview is format '<c' while bytes is 'B', and memoryviews whose
+    formats differ compare unequal no matter what they contain - which
+    silently turns every copy into a false CORRUPT.
+    """
+    got = memoryview(host_buf).cast("B")[:nbytes]
+    ref = memoryview(want).cast("B")[:nbytes]
+    if got == ref:
+        return -1
+    for k in range(nbytes):
+        if got[k] != ref[k]:
+            return k
+    return -1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--size-mb", type=int, default=256, help="buffer size per copy")
@@ -325,11 +343,11 @@ def main():
             cu.check(cu.cuCtxSetCurrent(ctxs[j]), "cuCtxSetCurrent")
             cu.check(cu.cuMemcpyDtoH(ctypes.cast(host_out, ctypes.c_void_p), bufs[j],
                                      ctypes.c_size_t(nbytes)), "cuMemcpyDtoH")
-            got = memoryview(host_out)[:nbytes]
-            if got != memoryview(pattern):
-                bad = next((k for k in range(nbytes) if got[k] != pattern[k]), -1)
+            bad = first_mismatch(host_out, pattern, nbytes)
+            if bad >= 0:
                 detail = "first mismatch at byte %d (got 0x%02x want 0x%02x)" % (
-                    bad, got[bad], pattern[bad]) if bad >= 0 else "length mismatch"
+                    bad, host_out[bad][0] if isinstance(host_out[bad], bytes)
+                    else host_out[bad], pattern[bad])
                 print("%-12s %-10s %-12s %s" % (label, "CORRUPT", "-", detail))
                 failures.append("%s corrupt: %s" % (label, detail))
                 continue
