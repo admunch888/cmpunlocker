@@ -97,6 +97,15 @@ if command -v systemctl &>/dev/null; then
     systemctl disable --now cmpunlocker-rebuild.service 2>/dev/null || true
     systemctl unmask nvidia-fallback.service 2>/dev/null || true
 fi
+# Timing overrides are volatile, so removing the unit is enough to put the
+# cards back at stock on the next boot.
+if command -v systemctl &>/dev/null; then
+    systemctl disable --now cmpunlocker-timings.service 2>/dev/null || true
+    systemctl reset-failed cmpunlocker-timings.service 2>/dev/null || true
+fi
+rm -f /etc/systemd/system/cmpunlocker-timings.service
+rm -f /etc/cmpunlocker/timings.conf
+
 # Older upstream installs shipped a cmpunlocker.service unit. Nothing installs
 # one now, but tear it down if an earlier version left it behind.
 if command -v systemctl &>/dev/null; then

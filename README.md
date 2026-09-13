@@ -122,6 +122,39 @@ Only pass `--mclk-ndiv=70` once the gate passes. If it fails, step down to
 66/68 (lower = safer). Omitting the flag preserves the stock VBIOS clock, which
 is the verified-good state.
 
+### DRAM timings (`--refresh=N`)
+
+Sets the FBPA `tRFC` (refresh cycle time) to N cycles on every card.
+
+This is **not** compiled into the driver. The FBPA `CONFIG0..CONFIG4`
+registers are volatile, so a reboot restores the VBIOS table — a bad value
+costs one reboot rather than a reinstall and a cold boot. The value is stored
+in `/etc/cmpunlocker/timings.conf` and replayed at each boot by
+`cmpunlocker-timings.service`, which runs *after* the driver is up because the
+`FBPA_MEM` PLM only opens on the first Booter round trip.
+
+```bash
+sudo ./install.sh --mclk-ndiv=70 --refresh=24
+# after reboot
+/usr/lib/cmpunlocker/fbpa_regs get RFC
+systemctl status cmpunlocker-timings
+```
+
+Needs the `fbpa_regs` helper from `overclocking/timings`; `install.sh` builds
+it if the sources are present, and the service reports loudly if it is missing
+rather than skipping silently.
+
+**`tRFC` holds cycles, not nanoseconds.** Its safe range therefore moves with
+`--mclk-ndiv`: raising the clock tightens every timing in absolute time. Read
+the stock value before changing it (`fbpa_regs get RFC`), and validate with
+`gpu_burn` reporting **zero** errors — a too-low `tRFC` does not fail loudly,
+it loses charge in DRAM cells and returns wrong data. `overclocking/timings/`
+has the measured sensitivity of every field; on this card bandwidth is
+clock-bound rather than timing-bound, and `tCCD_L=3` wedges the memory
+controller unrecoverably.
+
+To revert: reinstall without `--refresh` (or `remove.sh`), then reboot.
+
 ### P2P (`--p2p`)
 
 Opt-in. Enables real BAR1 peer access for CMP 170HX/220HX by overriding the GSP

@@ -1,0 +1,24 @@
+[Unit]
+Description=cmpunlocker: apply FBPA DRAM timing overrides
+Documentation=https://github.com/admunch888/cmpunlocker
+#
+# These registers are only writable once the FBPA_MEM PLM has been opened,
+# which happens on the driver's first Booter round trip. So unlike the Gen2
+# retrain this must run *after* the driver is up, not before - and it must not
+# block boot, because a failure here leaves a working card at stock timings.
+#
+After=multi-user.target cmpunlocker-rebuild.service
+Wants=cmpunlocker-rebuild.service
+ConditionPathExists=/etc/cmpunlocker/timings.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/cmpunlocker/apply-timings.sh
+RemainAfterExit=yes
+# The overrides are volatile, so a failed apply is a card at stock timings,
+# not a broken one. Report it and carry on rather than failing the boot.
+SuccessExitStatus=0 1
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ PROFILE_OVERRIDE=""
 CONFIGURE_IOMMU=1
 CONFIGURE_GEN2_SERVICE=1
 MCLK_NDIV=""
+REFRESH_RFC=""
 ENABLE_P2P=""
 INSTALL_PERSIST=1
 PIN_PACKAGES=1
@@ -23,6 +24,7 @@ for arg in "$@"; do
         --no-iommu) CONFIGURE_IOMMU=0 ;;
         --no-gen2-service) CONFIGURE_GEN2_SERVICE=0 ;;
         --mclk-ndiv=*) MCLK_NDIV="${arg#*=}" ;;
+        --refresh=*|--REFRESH=*) REFRESH_RFC="${arg#*=}" ;;
         --p2p) ENABLE_P2P=1 ;;
         --no-persist) INSTALL_PERSIST=0 ;;
         --no-pin) PIN_PACKAGES=0 ;;
@@ -41,6 +43,17 @@ Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
   --mclk-ndiv=N   Compile an HBM2e PLL target from NDIV 30-80 (N × 27 MHz).
                   Values below the VBIOS NDIV downclock; values above it
                   overclock. Omit the flag to preserve the VBIOS clock.
+  --refresh=N     Set the FBPA tRFC (refresh cycle time) to N cycles on every
+                  card, applied at each boot by cmpunlocker-timings.service.
+                  This is NOT compiled into the driver: the FBPA CONFIG
+                  registers are volatile, so a reboot restores the VBIOS
+                  table and a bad value costs one reboot, not a reinstall.
+                  Needs the fbpa_regs helper from overclocking/timings.
+                  tRFC holds cycles, not nanoseconds, so its safe range moves
+                  with --mclk-ndiv. Too low a value does not fail loudly - it
+                  loses charge in DRAM cells and returns wrong data. Read the
+                  stock value first (fbpa_regs get RFC) and validate any
+                  change with gpu_burn reporting zero errors.
   --p2p           Enable CMP-only BAR1 peer access. Requires a compatible PCIe
                   topology; verify with cudaDeviceCanAccessPeer and real copies.
   --no-persist    Do not auto-rebuild patched modules after kernel updates.
@@ -75,7 +88,7 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 source "${SCRIPT_DIR}/common/lib.sh"
 
 banner
-step_init 9
+step_init 10
 
 step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./install.sh"
@@ -330,6 +343,50 @@ else
     warn "--no-gen2-service given; early-boot PCIe retraining is not installed"
 fi
 
+step "Applying DRAM timing overrides"
+TIMINGS_STATUS="none"
+if [[ -n "${REFRESH_RFC}" ]]; then
+    install -d -m 0755 /etc/cmpunlocker /usr/lib/cmpunlocker
+    #
+    # fbpa_regs is a standalone BAR0 helper, not part of the driver build. Build
+    # it here if the sources are present so the boot service has something to
+    # call; if not, the service says so loudly rather than silently skipping.
+    #
+    FBPA_SRC="${SCRIPT_DIR}/overclocking/timings/fbpa_regs.c"
+    if [[ -f "${FBPA_SRC}" ]]; then
+        if cc -O2 -o /usr/lib/cmpunlocker/fbpa_regs "${FBPA_SRC}" 2>/dev/null; then
+            ok "Built fbpa_regs into /usr/lib/cmpunlocker/"
+        else
+            warn "Could not build ${FBPA_SRC} — install fbpa_regs manually"
+        fi
+    else
+        warn "${FBPA_SRC} not present; apply-timings.sh will search for fbpa_regs"
+    fi
+
+    install -m 0755 "${SCRIPT_DIR}/tools/apply-timings.sh" \
+        /usr/lib/cmpunlocker/apply-timings.sh
+    printf '# written by install.sh --refresh=%s\n' "${REFRESH_RFC}" \
+        > /etc/cmpunlocker/timings.conf
+    printf 'RFC=%s\n' "${REFRESH_RFC}" >> /etc/cmpunlocker/timings.conf
+    install -m 0644 "${SCRIPT_DIR}/systemd/cmpunlocker-timings.service" \
+        /etc/systemd/system/cmpunlocker-timings.service
+    systemctl daemon-reload
+    systemctl enable cmpunlocker-timings.service >/dev/null 2>&1 || true
+    ok "tRFC=${REFRESH_RFC} will be applied at each boot (cmpunlocker-timings.service)"
+    warn "tRFC is in cycles and is NOT validated by this installer. Check the"
+    warn "stock value and confirm it took after reboot:"
+    warn "  /usr/lib/cmpunlocker/fbpa_regs get RFC"
+    warn "  systemctl status cmpunlocker-timings"
+    warn "Validate with gpu_burn reporting zero errors before trusting it; a"
+    warn "too-low tRFC corrupts data silently rather than failing."
+    TIMINGS_STATUS="RFC=${REFRESH_RFC}"
+else
+    systemctl disable --now cmpunlocker-timings.service 2>/dev/null || true
+    rm -f /etc/systemd/system/cmpunlocker-timings.service /etc/cmpunlocker/timings.conf
+    systemctl daemon-reload 2>/dev/null || true
+    info "DRAM timings left at stock (use --refresh=N to set tRFC)"
+fi
+
 step "Surviving kernel updates"
 PERSIST_STATUS="skipped"
 if (( INSTALL_PERSIST == 0 )); then
@@ -503,6 +560,7 @@ else
     echo "P2P:      off (firmware-reported capabilities preserved)"
 fi
 echo "Passthrough: ${PASSTHROUGH_STATUS}"
+echo "DRAM timings: ${TIMINGS_STATUS}"
 if [[ -n "${IOMMU_PARAMS}" && "${IOMMU_STATUS}" != "skipped" ]]; then
     echo "IOMMU:   ${IOMMU_PARAMS} (${IOMMU_STATUS})"
 else
