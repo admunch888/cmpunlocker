@@ -199,8 +199,17 @@ destination bytes in both directions:
 
 ```bash
 sudo ./tools/p2p-verify.py            # add --size-mb / --iters to taste
+sudo ./tools/p2p-verify.py --local    # also measure device-local HBM bandwidth
 sudo dmesg | grep -i CMPUNLOCK_BAR1P2P
 ```
+
+`--local` adds a same-GPU copy that never leaves HBM, so unlike the peer figure
+(which is PCIe-bound) it moves with `--mclk-ndiv`. It reports the copy rate and
+the HBM traffic that implies - a copy reads and writes, so the controller sees
+about twice the copy rate - and verifies the bytes as well as timing them, so a
+clock or refresh change that corrupts memory is not reported as a win. It works
+on a single card, unlike the peer test. The numbers are not comparable to
+`nvidia_bench`, which measures differently.
 
 `tools/p2p-verify.py` talks to `libcuda` directly, so it needs no CUDA toolkit
 and no PyTorch. It copies a per-direction keyed pattern between every ordered

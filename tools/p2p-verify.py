@@ -30,6 +30,9 @@ CMP_DEVICE_IDS = {"20c2", "2082"}
 # transfer rate - it means the copy was still in flight when the clock stopped.
 PCIE_CEILING_GBPS = 30.0
 
+# HBM2e on a full GA100 peaks near 1.6 TB/s. Past this the clock stopped early.
+HBM_CEILING_GBPS = 4000.0
+
 # CUresult values we special-case
 CUDA_SUCCESS = 0
 CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED = 704
@@ -66,7 +69,8 @@ class Cuda:
     # Only these four have a v2 ABI in libcuda (the pre-CUDA-3.2 originals took
     # 32-bit sizes). Probing "<name>_v2" for everything risks binding an
     # unrelated versioned symbol, so the list is explicit.
-    V2_SYMBOLS = {"cuMemAlloc", "cuMemFree", "cuMemcpyHtoD", "cuMemcpyDtoH"}
+    V2_SYMBOLS = {"cuMemAlloc", "cuMemFree", "cuMemcpyHtoD", "cuMemcpyDtoH",
+                  "cuMemcpyDtoD"}
 
     SIGNATURES = {
         "cuGetErrorString":         [CUresult, ctypes.POINTER(ctypes.c_char_p)],
@@ -84,6 +88,7 @@ class Cuda:
         "cuMemFree":                [CUdeviceptr],
         "cuMemcpyHtoD":             [CUdeviceptr, ctypes.c_void_p, ctypes.c_size_t],
         "cuMemcpyDtoH":             [ctypes.c_void_p, CUdeviceptr, ctypes.c_size_t],
+        "cuMemcpyDtoD":             [CUdeviceptr, CUdeviceptr, ctypes.c_size_t],
         "cuMemcpyPeer":             [CUdeviceptr, CUcontext, CUdeviceptr, CUcontext,
                                      ctypes.c_size_t],
     }
@@ -230,6 +235,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--size-mb", type=int, default=256, help="buffer size per copy")
     ap.add_argument("--iters", type=int, default=5, help="timed iterations per direction")
+    ap.add_argument("--local", action="store_true",
+                    help="also measure device-local HBM bandwidth on each GPU "
+                         "(same-device copy), for checking an --mclk-ndiv change")
     ap.add_argument("--debug", action="store_true",
                     help="print the libcuda symbol bound for each entry point")
     ap.add_argument("--all-gpus", action="store_true",
@@ -266,9 +274,12 @@ def main():
         ctxs.append(ctx)
         info.append((ordinal, bus, device_name(cu, dev), upstream_bridge(bus)))
 
-    if len(devs) < 2:
+    if len(devs) < 2 and not args.local:
         sys.exit("error: need at least 2 CMP 170HX GPUs, found %d "
-                 "(use --all-gpus to test others)" % len(devs))
+                 "(use --all-gpus to test others, or --local for one card)"
+                 % len(devs))
+    if not devs:
+        sys.exit("error: no CMP 170HX GPUs found")
 
     print("\nGPUs under test")
     for i, (ordinal, bus, name, bridge) in enumerate(info):
@@ -329,6 +340,72 @@ def main():
     host_out = ctypes.create_string_buffer(nbytes)
     sentinel = b"\xA5" * nbytes
     failures = []
+
+    if args.local:
+        #
+        # Device-local bandwidth: a same-GPU copy never leaves HBM, so this
+        # moves with --mclk-ndiv where the peer figure (PCIe-bound) does not.
+        # Bytes are verified as well as timed - a clock or refresh change that
+        # corrupts memory should not be reported as a bandwidth win.
+        #
+        print("\nDevice-local HBM bandwidth, %d MiB per copy" % args.size_mb)
+        print("%-12s %-10s %-14s %-14s %s"
+              % ("gpu", "result", "copy", "HBM traffic", "detail"))
+        for i in range(len(devs)):
+            label = "[%d]" % i
+            cu.check(cu.cuCtxSetCurrent(ctxs[i]), "cuCtxSetCurrent")
+            dst = CUdeviceptr()
+            cu.check(cu.cuMemAlloc(ctypes.byref(dst), ctypes.c_size_t(nbytes)),
+                     "cuMemAlloc local dst")
+
+            pattern = keyed_pattern(nbytes, i, i)
+            cu.check(cu.cuMemcpyHtoD(bufs[i], ctypes.cast(ctypes.c_char_p(pattern),
+                                                          ctypes.c_void_p),
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyHtoD local src")
+            cu.check(cu.cuMemcpyHtoD(dst, ctypes.cast(ctypes.c_char_p(sentinel),
+                                                      ctypes.c_void_p),
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyHtoD local sentinel")
+            cu.check(cu.cuMemcpyDtoD(dst, bufs[i], ctypes.c_size_t(nbytes)),
+                     "cuMemcpyDtoD")
+            cu.check(cu.cuMemcpyDtoH(ctypes.cast(host_out, ctypes.c_void_p), dst,
+                                     ctypes.c_size_t(nbytes)), "cuMemcpyDtoH local")
+            bad = first_mismatch(host_out, pattern, nbytes)
+            if bad >= 0:
+                if is_untouched(host_out, nbytes):
+                    detail = "destination untouched - copy moved nothing"
+                else:
+                    got_b = memoryview(host_out).cast("B")
+                    detail = ("first mismatch at byte %d (got 0x%02x want 0x%02x)"
+                              % (bad, got_b[bad], pattern[bad]))
+                print("%-12s %-10s %-14s %-14s %s"
+                      % (label, "CORRUPT", "-", "-", detail))
+                failures.append("%s local copy corrupt: %s" % (label, detail))
+                cu.cuMemFree(dst)
+                continue
+
+            # cuMemcpyDtoD is device-to-device, so it is asynchronous with
+            # respect to the host for the same reason cuMemcpyPeer is.
+            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
+            start = time.perf_counter()
+            for _ in range(args.iters):
+                cu.check(cu.cuMemcpyDtoD(dst, bufs[i], ctypes.c_size_t(nbytes)),
+                         "cuMemcpyDtoD timed")
+            cu.check(cu.cuCtxSynchronize(), "cuCtxSynchronize")
+            elapsed = time.perf_counter() - start
+            gbps = (nbytes * args.iters) / elapsed / 1e9
+            note = "all %d bytes verified" % nbytes
+            if gbps > HBM_CEILING_GBPS:
+                note += " - BANDWIDTH IMPLAUSIBLE, treat as unmeasured"
+            # A copy reads nbytes and writes nbytes, so HBM sees about twice
+            # the copy rate. Both are printed because benchmarks differ on
+            # which one they call "bandwidth".
+            print("%-12s %-10s %-14s %-14s %s"
+                  % (label, "OK", "%.1f GB/s" % gbps, "%.1f GB/s" % (gbps * 2), note))
+            cu.cuMemFree(dst)
+
+    if len(devs) < 2:
+        print("\nOnly one GPU - skipping the peer test.")
+        return 1 if failures else 0
     print("\nCopying %d MiB per direction, verifying every byte on the host" % args.size_mb)
     print("%-12s %-10s %-12s %s" % ("pair", "result", "bandwidth", "detail"))
 
@@ -403,8 +480,7 @@ def main():
 
     print()
     if failures:
-        print("FAIL: %d of %d ordered pairs did not verify" % (
-            len(failures), len(devs) * (len(devs) - 1)))
+        print("FAIL: %d check(s) did not verify" % len(failures))
         for f in failures:
             print("  - %s" % f)
         print("\nP2P is NOT safe to rely on here. Reinstall without it:")
