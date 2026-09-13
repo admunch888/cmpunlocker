@@ -15,6 +15,7 @@ MCLK_NDIV=""
 ENABLE_P2P=""
 INSTALL_PERSIST=1
 PIN_PACKAGES=1
+CONFIGURE_PASSTHROUGH=1
 for arg in "$@"; do
     case "${arg}" in
         --profile=8gb|--profile=8GB) PROFILE_OVERRIDE="8gb" ;;
@@ -25,10 +26,12 @@ for arg in "$@"; do
         --p2p) ENABLE_P2P=1 ;;
         --no-persist) INSTALL_PERSIST=0 ;;
         --no-pin) PIN_PACKAGES=0 ;;
+        --no-passthrough) CONFIGURE_PASSTHROUGH=0 ;;
         -h|--help)
             cat <<'EOF'
 Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
                          [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin]
+                         [--no-passthrough]
 
   --profile=8gb   Force 8GB metadata label (geometry is still chosen per PCI ID)
   --profile=10gb  Force 10GB metadata label (geometry is still chosen per PCI ID)
@@ -42,6 +45,10 @@ Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
                   topology; verify with cudaDeviceCanAccessPeer and real copies.
   --no-persist    Do not auto-rebuild patched modules after kernel updates.
   --no-pin        Do not pin the installed NVIDIA driver packages.
+  --no-passthrough
+                  Do not set the cards up for VM passthrough. By default the
+                  unlock is made to survive being handed to vfio-pci, so a VM
+                  sees an unlocked card with only a stock NVIDIA driver in it
 
 By default the installer appends intel_iommu=on / amd_iommu=on plus iommu=pt to
 the kernel command line so the IOMMU runs in passthrough mode. This takes effect
@@ -68,7 +75,7 @@ exec > >(tee -a "${LOG_FILE}") 2>&1
 source "${SCRIPT_DIR}/common/lib.sh"
 
 banner
-step_init 8
+step_init 9
 
 step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./install.sh"
@@ -178,7 +185,8 @@ for i in "${!GPU_BDFS[@]}"; do
     GPU_INVENTORY_LINES+=("${GPU_BDFS[$i]} ${GPU_DEVIDS[$i]} ${GPU_PROFILES[$i]} ${GPU_EXPECTED[$i]}")
 done
 export CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}"
-export CMPUNLOCKER_GPU_INVENTORY="$(printf '%s\n' "${GPU_INVENTORY_LINES[@]}")"
+CMPUNLOCKER_GPU_INVENTORY="$(printf '%s\n' "${GPU_INVENTORY_LINES[@]}")"
+export CMPUNLOCKER_GPU_INVENTORY
 
 step "Verifying nvidia-open (${SUPPORTED_VERSIONS_CSV})"
 [[ ${#SUPPORTED_VERSIONS[@]} -gt 0 ]] || die "No supported versions listed in driver/VERSION"
@@ -241,6 +249,20 @@ CMPUNLOCKER_MCLK_NDIV="${MCLK_NDIV}" \
 CMPUNLOCKER_ENABLE_P2P="${ENABLE_P2P}" \
     "${SCRIPT_DIR}/driver/build.sh"
 ok "Patched modules installed (profile ${CARD_PROFILE})"
+
+step "Setting up VM passthrough"
+PASSTHROUGH_STATUS="skipped"
+if (( CONFIGURE_PASSTHROUGH == 1 )); then
+    chmod +x "${SCRIPT_DIR}/tools/passthrough-setup.sh"
+    if CMPUNLOCKER_KVER="$(uname -r)" "${SCRIPT_DIR}/tools/passthrough-setup.sh"; then
+        PASSTHROUGH_STATUS="armed"
+    else
+        PASSTHROUGH_STATUS="failed"
+        warn "passthrough setup failed; the unlock still works on this host"
+    fi
+else
+    warn "--no-passthrough given; cards are not prepared for VM passthrough"
+fi
 
 step "Configuring modprobe options"
 MODPROBE_OPTS_FILE="/etc/modprobe.d/cmp-unlock.conf"
@@ -455,6 +477,7 @@ if [[ -n "${ENABLE_P2P}" ]]; then
 else
     echo "P2P:      off (firmware-reported capabilities preserved)"
 fi
+echo "Passthrough: ${PASSTHROUGH_STATUS}"
 if [[ -n "${IOMMU_PARAMS}" && "${IOMMU_STATUS}" != "skipped" ]]; then
     echo "IOMMU:   ${IOMMU_PARAMS} (${IOMMU_STATUS})"
 else

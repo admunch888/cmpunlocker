@@ -1,10 +1,24 @@
-diff --git a/src/nvidia/src/kernel/gpu/gpu.c b/src/nvidia/src/kernel/gpu/gpu.c
+Local fix (not upstream): force the GSP-reported PCIe peer caps for CMP cards.
+
+Anchored with no surrounding context on purpose. The two assignment lines below
+are unique in gpu.c, while the lines around them are not stable across the
+supported drivers: 610.x closes _gpuInitPcieP2PCapability() immediately after
+them, whereas 615.71.09 adds
+
+    pGpu->bPcieP2PSkipChipsetCheck = p2pCapsParams.bSkipChipsetCheck;
+
+before the closing brace. Carrying trailing context here made the hunk apply to
+one driver generation and fail on the other; matching only the replaced lines
+applies cleanly (fuzz 0) to every version in driver/VERSION.
+
+
 --- a/src/nvidia/src/kernel/gpu/gpu.c
 +++ b/src/nvidia/src/kernel/gpu/gpu.c
-@@ -2516,6 +2516,22 @@ _gpuInitPcieP2PCapability
- 
-     pGpu->pcieP2PReadCaps = p2pCapsParams.p2pReadCapsStatus;
-     pGpu->pcieP2PWriteCaps = p2pCapsParams.p2pWriteCapsStatus;
+@@ -2518,2 +2518,18 @@ _gpuInitPcieP2PCapability
+-    pGpu->pcieP2PReadCaps = p2pCapsParams.p2pReadCapsStatus;
+-    pGpu->pcieP2PWriteCaps = p2pCapsParams.p2pWriteCapsStatus;
++    pGpu->pcieP2PReadCaps = p2pCapsParams.p2pReadCapsStatus;
++    pGpu->pcieP2PWriteCaps = p2pCapsParams.p2pWriteCapsStatus;
 +
 +    // CMP 170HX/220HX GSP firmware reports PCIe peer access as unsupported
 +    // even when the host topology and BAR1 path can carry it. This patch is
@@ -21,6 +35,3 @@ diff --git a/src/nvidia/src/kernel/gpu/gpu.c b/src/nvidia/src/kernel/gpu/gpu.c
 +                      cmpDevId);
 +        }
 +    }
- }
- 
- static void

@@ -54,6 +54,36 @@ fi
 chmod +x "${PAYLOAD_DIR}/driver/build.sh"
 
 #
+# build.sh resolves common/constants.yaml and tools/read-constants.py relative to
+# its own directory and dies if either is missing, so the payload needs them too.
+# Without this the first kernel update after an upgrade fails to rebuild and the
+# card silently comes back on the stock driver - the rollback this exists to stop.
+#
+# read-constants.py also cross-checks the passthrough block against
+# tools/gsp-restore.py, tools/passthrough*.sh and driver/passthrough/, so the
+# whole of common/ and tools/ is carried rather than a hand-picked list that
+# would silently go stale the next time upstream validates another file.
+rm -rf "${PAYLOAD_DIR}/common" "${PAYLOAD_DIR}/tools" "${PAYLOAD_DIR}/driver/passthrough"
+cp -a "${REPO_DIR}/common" "${PAYLOAD_DIR}/common"
+cp -a "${REPO_DIR}/tools"  "${PAYLOAD_DIR}/tools"
+if [[ -d "${REPO_DIR}/driver/passthrough" ]]; then
+    cp -a "${REPO_DIR}/driver/passthrough" "${PAYLOAD_DIR}/driver/passthrough"
+fi
+
+#
+# read-constants.py needs python3 + PyYAML. Fail loudly now, while the user is
+# watching, instead of at 3am during an unattended kernel upgrade.
+#
+if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 not found — kernel-update rebuilds will fail (build.sh needs it)"
+elif ! python3 -c "import yaml" >/dev/null 2>&1; then
+    warn "python3 PyYAML not found — kernel-update rebuilds will fail"
+    warn "  install it with:  sudo apt install python3-yaml   (or dnf/pacman equivalent)"
+else
+    ok "python3 + PyYAML present for kernel-update rebuilds"
+fi
+
+#
 # Carry the downloaded tarball over too. Without it every kernel update needs
 # network access to GitHub, which a rig behind a flaky link may not have.
 # Only the tarball, not the extracted tree - that is ~1 GB of rebuildable data.

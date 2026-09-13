@@ -78,10 +78,12 @@ pin_dnf() {
     fi
 
     before="$(dnf_locked_count)"
+    # ${pkgs} is an intentionally unquoted space-separated package list.
     # shellcheck disable=SC2086
-    dnf -C versionlock add ${pkgs} >/dev/null 2>&1 || \
-    # shellcheck disable=SC2086
-    dnf versionlock add ${pkgs} >/dev/null 2>&1 || true
+    if ! dnf -C versionlock add ${pkgs} >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        dnf versionlock add ${pkgs} >/dev/null 2>&1 || true
+    fi
     after="$(dnf_locked_count)"
 
     #
@@ -104,10 +106,12 @@ unpin_dnf() {
     local pkgs
     pkgs="$(rpm_pkgs)"
     [[ -n "${pkgs}" ]] || return 0
+    # ${pkgs} is an intentionally unquoted space-separated package list.
     # shellcheck disable=SC2086
-    dnf -C versionlock delete ${pkgs} >/dev/null 2>&1 || \
-    # shellcheck disable=SC2086
-    dnf versionlock delete ${pkgs} >/dev/null 2>&1 || true
+    if ! dnf -C versionlock delete ${pkgs} >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        dnf versionlock delete ${pkgs} >/dev/null 2>&1 || true
+    fi
     info "removed dnf versionlock entries for nvidia packages"
 }
 
@@ -115,7 +119,13 @@ status_dnf() {
     dnf_versionlock_available || { echo "  dnf versionlock plugin not available"; return 0; }
     local out
     out="$({ dnf -C versionlock list 2>/dev/null || dnf versionlock list 2>/dev/null; } | grep -i nvidia)"
-    [[ -n "${out}" ]] && echo "${out}" | sed 's/^/  /' || echo "  (none)"
+    if [[ -n "${out}" ]]; then
+        # sed anchors the indent per line; ${var//…} has no per-line anchor.
+        # shellcheck disable=SC2001
+        echo "${out}" | sed 's/^/  /'
+    else
+        echo "  (none)"
+    fi
 }
 
 # --------------------------------------------------------------- apt / dpkg --

@@ -1,11 +1,53 @@
-# cmpunlocker
+<div align="center" style="text-align: center;">
+  <img width="1280" height="300" alt="cmpunlocker banner" src="https://github.com/user-attachments/assets/6edceb8e-afcb-43a4-b5b2-4321d81284d1" />
+</div>
 
-Unlock tool for the NVIDIA CMP 170HX (GA100) mining card. Restores full SM
-compute throughput and unlocked HBM2e memory geometry that are restricted in
-firmware/OTP configuration.
+---
+
+## What is cmpunlocker?
+
+<p>
+  cmpunlocker restores numerous features that are restricted in firmware/OTP configuration of the NVIDIA CMP 170HX. cmpunlocker has been featured by multiple outlets like wccftech, Tom's Hardware and LinusTechTips.
+</p>
+
+<table>
+  <tr>
+    <td><a href="https://www.youtube.com/watch?v=pvSdeU13hKc" title=""><img src="https://github.com/user-attachments/assets/be0a9cab-19b6-47c4-91cd-cb6a98be406f"></a></td>
+    <td><a href="https://www.tomshardware.com/pc-components/gpus/nvidia-crypto-mining-gpus-hacked-to-restore-locked-away-vram-in-order-to-feed-ai-boom-software-mod-unlocks-64gb-of-vram-on-usd250-cmp-170hx" title="Article by Tom's Hardware"><img src="https://github.com/user-attachments/assets/e801b2b3-3002-4346-a9ad-6b228ef62b6a"></a></td>
+    <td><a href="https://wccftech.com/nvidia-cmp-170hx-8-10-gb-prices-explode-over-1000-usd-as-tool-unlocks-hidden-64-80gb-vram/" title="Article by wccftech"><img src="https://github.com/user-attachments/assets/475b5acf-999b-430c-8ede-1c39e9fd6b97"></a></td>
+  </tr>
+</table>
+
+---
+
+## Proof of Concept
+
+Below are memory and performance results after applying the unlock:
+
+<table>
+  <tr>
+    <td><b>Memory Unlock Results</b></td>
+  </tr>
+  <tr>
+    <td><img alt="memory unlock" src="https://github.com/user-attachments/assets/ae062bd8-e3a7-4e73-b9a4-fbcde53f3c7b" width="100%" style="max-width: 900px;" /></td>
+  </tr>
+</table>
+
+<table>
+  <tr>
+    <td><b>Performance Benchmarks (<a href="https://github.com/ProjectPhysX/OpenCL-Benchmark">OpenCL-Benchmark</a>)</b></td>
+  </tr>
+  <tr>
+    <td><img alt="performance benchmarks" src="https://github.com/user-attachments/assets/2501506d-420f-4014-9574-b1bd0290eb60" width="100%" style="max-width: 900px;" /></td>
+  </tr>
+</table>
+
+---
+
+## About this fork
 
 This is a fork of [amoghmunikote/cmpunlocker](https://github.com/amoghmunikote/cmpunlocker)
-that adds the missing features on top of the 610.57.04-compatible base:
+that adds, on top of the upstream base:
 
 - **HBM2e clock tuning** (downclock / overclock) via `--mclk-ndiv=N`
 - **PMA region fix** — the late-PMA extension is skipped on CMP cards, avoiding
@@ -22,15 +64,14 @@ This work builds on [amoghmunikote](https://github.com/amoghmunikote/cmpunlocker
 [bayley](https://github.com/bayley) — see [CREDITS.md](CREDITS.md) for the full
 lineage.
 
-**[Join the Discord community](https://discord.gg/CdHSakKSFv)** for support.
-
 ---
 
 ## Requirements
 
 - Linux (x86-64), root access
 - NVIDIA CMP 170HX (GA100, `10de:20c2` 8 GB → 64 GB, `10de:2082` 10 GB → 40 GB)
-- **nvidia-open 610.57.04 (or 610.43.03/610.43.02) already installed** (libs + firmware)
+- **nvidia-open already installed** (libs + firmware) at one of the versions in
+  [`driver/VERSION`](driver/VERSION): 615.71.09, 610.57.04, 610.43.03, 610.43.02
 - Kernel headers matching the running kernel (`linux-headers-$(uname -r)` / `kernel-devel`)
 - Secure Boot disabled (patched modules are unsigned)
 - Network access on first install (downloads matching stock `open-gpu-kernel-modules` sources)
@@ -50,7 +91,8 @@ Then perform a **cold reboot** (full power off, then boot).
 
 ```bash
 sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service] \
-                  [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin]
+                  [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin] \
+                  [--no-passthrough]
 ```
 
 | Flag | Effect |
@@ -62,6 +104,7 @@ sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service] \
 | `--p2p` | Enable CMP-only BAR1 peer access (see below) |
 | `--no-persist` | Do not auto-rebuild patched modules after kernel updates |
 | `--no-pin` | Do not pin the installed NVIDIA driver packages |
+| `--no-passthrough` | Do not prepare the cards for VM passthrough (on by default, so a VM sees an unlocked card with a stock driver) |
 
 ### HBM2e clock tuning (`--mclk-ndiv`)
 
@@ -102,17 +145,60 @@ costs ~141 MB of the 63.5 GiB exposed memory and removes the fault entirely.
 
 ## What Gets Unlocked
 
-| Feature | Status |
-|---|---|
-| Full SM compute throughput (SS0/SS1) | Working ✓ |
-| Memory geometry (64 GB on 8 GB cards, 40 GB on 10 GB cards) | Working ✓ |
-| PCIe Gen 2 speeds | Working ✓ |
-| Full BAR1 Size (64 GB) | Working ✓ |
-| JTAG (Host2Jtag register access) | Working ✓ |
-| HBM2e clock tuning (downclock / overclock) | Working ✓ (`--mclk-ndiv`) |
-| BAR1 P2P | Working ✓ (`--p2p`) |
-| Persistence across kernel updates | Working ✓ (on by default) |
-| Anti-rollback (driver pin) | Working ✓ (on by default) |
+<table>
+  <tr>
+    <th>Feature</th>
+    <th>Status</th>
+  </tr>
+  <tr>
+    <td>Full SM compute throughput (SS0/SS1)</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>Memory geometry (64GB on 8GB cards, 40GB on 10GB cards)</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>PCIe Gen 2 speeds</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>Full BAR1 Size (64GB)</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>JTAG (Host2Jtag register access)</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>VFIO-based passthrough</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>GPU profiling</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>Persistence across reboot (patched modules)</td>
+    <td>Working ✓</td>
+  </tr>
+  <tr>
+    <td>HBM2e clock tuning (downclock / overclock)</td>
+    <td>Working ✓ (<code>--mclk-ndiv</code>)</td>
+  </tr>
+  <tr>
+    <td>BAR1 P2P</td>
+    <td>Working ✓ (<code>--p2p</code>)</td>
+  </tr>
+  <tr>
+    <td>Persistence across kernel updates</td>
+    <td>Working ✓ (on by default)</td>
+  </tr>
+  <tr>
+    <td>Anti-rollback (driver pin)</td>
+    <td>Working ✓ (on by default)</td>
+  </tr>
+</table>
 
 ---
 
@@ -170,6 +256,10 @@ reboot. It is off by default because loading the stock `nvidia-drm` against a
 CMP can wedge the machine.
 
 ---
+
+## Contributions
+
+Please read [docs/CONTRIBUTING.md](https://github.com/amoghmunikote/cmpunlocker/blob/master/docs/CONTRIBUTING.md) before opening a PR.
 
 ## Support & Community
 

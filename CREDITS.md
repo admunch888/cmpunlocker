@@ -7,6 +7,7 @@ This fork builds on excellent prior work. Thanks to:
 | [amoghmunikote](https://github.com/amoghmunikote/cmpunlocker) | Base fork: CMP 170HX unlock on nvidia-open 610.57.04 (JTAG, PCIe Gen 2, DKMS removal, docs) |
 | [asm64-hooligan](https://github.com/asm64-hooligan/cmpunlocker) | Full BAR1 size (64 GB); HBM2e clock tuning (`--mclk-ndiv`); PMA region fix (skip late-PMA to avoid Xid 31 `REGION_VIOLATION`) |
 | [bayley](https://github.com/bayley) | Real BAR1 P2P peer-access override (ported as the `--p2p` feature) |
+| [lesj0610](https://github.com/lesj0610/) | GPU profiling |
 
 ## Lineage
 

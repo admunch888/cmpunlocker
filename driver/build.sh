@@ -45,6 +45,7 @@ version_supported "${VERSION}" || die "Unsupported driver version '${VERSION}' (
 [[ -d "${PATCH_DIR}" ]] || die "Missing patches directory: ${PATCH_DIR}"
 [[ -d "${KSRC}" ]] || die "Kernel headers not found at ${KSRC}. Install linux-headers-${KVER} (or kernel-devel)."
 command -v python3 &>/dev/null || die "python3 is required to apply the card memory profile"
+python3 -c "import yaml" 2>/dev/null || die "python3 PyYAML is required to read common/constants.yaml (apt install python3-yaml)"
 command -v sha256sum &>/dev/null || die "sha256sum is required"
 info "Building against open-gpu-kernel-modules ${VERSION}"
 
@@ -59,6 +60,7 @@ PATCH_ORDER=(
     pcie-gen2-probe-retrain.patch
     name-string.patch
     bar1-resize-unlock.patch
+    cmp-sku-mask.patch
 )
 MCLK_PATCHES=(
     mclk-clock-tuning-pre-gsp.patch
@@ -90,35 +92,18 @@ done
 PATCH_HASH="$(cat "${PATCH_FILES[@]}" | sha256sum | cut -d' ' -f1)"
 
 PROFILE="${CMPUNLOCKER_CARD_PROFILE:-8gb}"
-SKIP_GEOMETRY_REWRITE=0
 case "${PROFILE}" in
-    8gb|8GB)
-        PROFILE="8gb"
-        CFG1="0x02779000"
-        LMR="0x0000020B"
-        FB_BYTES="0x0000001000000000"
-        UNLOCK_LABEL="64GB"
-        ;;
-    10gb|10GB)
-        PROFILE="10gb"
-        CFG1="0x02669000"
-        LMR="0x0000028A"
-        FB_BYTES="0x0000000A00000000"
-        UNLOCK_LABEL="40GB"
-        ;;
-    mixed|MIXED)
-        PROFILE="mixed"
-        CFG1="0x02779000"
-        LMR="0x0000020B"
-        FB_BYTES="0x0000001000000000"
-        UNLOCK_LABEL="mixed"
-        SKIP_GEOMETRY_REWRITE=1
-        ;;
-    *)
-        die "Unknown CMPUNLOCKER_CARD_PROFILE='${PROFILE}' (use 8gb, 10gb, or mixed)"
-        ;;
+    8GB) PROFILE="8gb" ;;
+    10GB) PROFILE="10gb" ;;
+    MIXED) PROFILE="mixed" ;;
 esac
 
+CONSTANTS="${SCRIPT_DIR}/../common/constants.yaml"
+[[ -r "${CONSTANTS}" ]] || die "Missing ${CONSTANTS}"
+CONSTANTS_ENV="$(python3 "${SCRIPT_DIR}/../tools/read-constants.py" "${CONSTANTS}" "${PATCH_DIR}" "${SCRIPT_DIR}/build.sh" "${PROFILE}")" || die "common/constants.yaml rejected (see error above)"
+eval "${CONSTANTS_ENV}"
+
+# mclk/p2p stay in the stamp: they are opt-in via env and must invalidate the cached tree.
 BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:mclk=${MCLK_NDIV:-stock}:p2p=${ENABLE_P2P:-off}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
@@ -338,14 +323,14 @@ info "Attempting to unload NVIDIA modules..."
 systemctl stop nvidia-persistenced 2>/dev/null || true
 systemctl stop nvidia-fabricmanager 2>/dev/null || true
 reload_ok=0
-if lsmod | grep -q '^nvidia'; then
+if grep -q '^nvidia' /proc/modules; then
     for mod in nvidia_drm nvidia_uvm nvidia_modeset nvidia; do
         modprobe -r "${mod}" 2>/dev/null || true
     done
     sleep 1
 fi
 
-if ! lsmod | grep -q '^nvidia '; then
+if ! grep -q '^nvidia ' /proc/modules; then
     if modprobe nvidia && modprobe nvidia-modeset; then
         modprobe nvidia-uvm 2>/dev/null || true
         modprobe nvidia-drm 2>/dev/null || true

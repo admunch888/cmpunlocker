@@ -2,6 +2,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_NAME="cmpunlocker"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+INSTALL_DIR="/opt/cmpunlocker"
+PASSTHROUGH_LIB="/usr/local/lib/cmpunlocker"
+mapfile -t SUPPORTED_VERSIONS < <(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' "${SCRIPT_DIR}/driver/VERSION" 2>/dev/null || true)
 
 source "${SCRIPT_DIR}/common/lib.sh"
 
@@ -45,8 +50,18 @@ EOF
 done
 
 if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
-    echo "This removes cmpunlocker patched kernel modules and all of its"
-    echo "kernel-update automation. Run with --yes to proceed:"
+    warn "This removes cmpunlocker patched kernel modules and all of its"
+    warn "kernel-update automation:"
+    echo "  - Stops cmpunlocker systemd service"
+    echo "  - Removes /lib/modules/*/updates/cmpunlocker/"
+    echo "  - Removes ${INSTALL_DIR} (legacy install dir, if present)"
+    echo "  - Removes cmpretrain service / modprobe Gen2 helpers"
+    echo "  - Removes VM passthrough helpers (service, udev rule, vfio modprobe conf)"
+    echo "  - Removes the kernel-update hooks, boot rebuild service and package pin"
+    echo "  - Rebuilds the stock nvidia DKMS modules that install.sh removed"
+    echo "  - Restores the pre-install kernel command line (reverts IOMMU changes)"
+    echo ""
+    echo "The running driver is left in memory unless --reload is given."
     echo ""
     echo "  sudo ./remove.sh --yes"
     echo ""
@@ -54,7 +69,7 @@ if [[ "${1:-}" != "--yes" && "${1:-}" != "-y" ]]; then
 fi
 
 banner
-step_init 6
+step_init 7
 
 step "Verifying root privileges"
 [[ "${EUID}" -eq 0 ]] || die "Run as root: sudo ./remove.sh --yes"
@@ -82,6 +97,13 @@ if command -v systemctl &>/dev/null; then
     systemctl disable --now cmpunlocker-rebuild.service 2>/dev/null || true
     systemctl unmask nvidia-fallback.service 2>/dev/null || true
 fi
+# Older upstream installs shipped a cmpunlocker.service unit. Nothing installs
+# one now, but tear it down if an earlier version left it behind.
+if command -v systemctl &>/dev/null; then
+    systemctl disable --now "${SERVICE_NAME}" 2>/dev/null || true
+    systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
+fi
+rm -f "${SERVICE_FILE}"
 rm -f /etc/systemd/system/cmpunlocker-rebuild.service
 rm -f /etc/kernel/install.d/95-cmpunlocker.install
 rm -f /etc/kernel/postinst.d/cmpunlocker
@@ -111,8 +133,25 @@ rm -f /etc/modprobe.d/cmp-pcie-gen2.conf
 systemctl disable --now gen2.service 2>/dev/null || true
 systemctl reset-failed gen2.service 2>/dev/null || true
 rm -f /etc/systemd/system/gen2.service /usr/local/sbin/gen2-hammer
-systemctl daemon-reload 2>/dev/null || true
 ok "Removed PCIe Gen2 helpers"
+
+info "Removing VM passthrough helpers"
+systemctl disable --now cmpunlocker-passthrough.service 2>/dev/null || true
+systemctl reset-failed cmpunlocker-passthrough.service 2>/dev/null || true
+rm -f /etc/systemd/system/cmpunlocker-passthrough.service \
+      /etc/udev/rules.d/99-cmpunlocker-passthrough.rules \
+      /etc/modprobe.d/cmpunlocker-vfio.conf
+rm -rf "${PASSTHROUGH_LIB}"
+udevadm control --reload-rules 2>/dev/null || true
+if grep -q '^cmp_no_bus_reset ' /proc/modules; then
+    rmmod cmp_no_bus_reset 2>/dev/null || true
+fi
+mapfile -t cmp_bdfs < <(lspci -Dn 2>/dev/null | awk '/10de:20c2|10de:2082/{print $1}')
+for bdf in "${cmp_bdfs[@]}"; do
+    printf 'default' > "/sys/bus/pci/devices/${bdf}/reset_method" 2>/dev/null || true
+done
+systemctl daemon-reload 2>/dev/null || true
+ok "Removed VM passthrough helpers"
 
 step "Restoring IOMMU kernel command line"
 iommu_restored=0
@@ -136,39 +175,64 @@ else
     warn "No IOMMU config backup found — kernel command line left as-is"
 fi
 
-step "Removing patched modules"
+step "Removing patched modules and restoring stock NVIDIA modules"
+restore_stock_modules() {
+    local kernel="$1" ver
+    if modprobe -n -q -S "${kernel}" nvidia 2>/dev/null; then
+        ok "Stock nvidia module present for kernel ${kernel}: $(modinfo -n -k "${kernel}" nvidia 2>/dev/null || true)"
+        return 0
+    fi
+    if ! command -v dkms &>/dev/null; then
+        warn "No nvidia module for kernel ${kernel} and dkms is not installed — reinstall your distro's nvidia driver package"
+        return 0
+    fi
+    for ver in "${SUPPORTED_VERSIONS[@]}"; do
+        [[ -f "/usr/src/nvidia-${ver}/dkms.conf" ]] || continue
+        info "Rebuilding stock nvidia ${ver} DKMS modules for kernel ${kernel} (install.sh removed them)..."
+        if dkms install "nvidia/${ver}" -k "${kernel}"; then
+            ok "Stock nvidia ${ver} modules restored for kernel ${kernel}"
+            return 0
+        fi
+        warn "dkms install nvidia/${ver} failed for kernel ${kernel}"
+    done
+    warn "No stock nvidia DKMS source found for kernel ${kernel} — reinstall your distro's nvidia driver package"
+    return 0
+}
+
 mod_removed=0
-kernels_touched=()
+kernels=("$(uname -r)")
 shopt -s nullglob
 for mod_dir in /lib/modules/*/updates/cmpunlocker; do
     if [[ -d "${mod_dir}" ]]; then
         kernel="$(basename "$(dirname "$(dirname "${mod_dir}")")")"
         rm -rf "${mod_dir}"
-        # depmod AND sync: a power cut between depmod and the next flush
-        # leaves a zero-length modules.dep and nothing resolves on boot.
-        depmod -a "${kernel}" 2>/dev/null || true
-        sync
         ok "Removed patched modules for kernel ${kernel}"
         mod_removed=$((mod_removed + 1))
-        kernels_touched+=("${kernel}")
+        [[ " ${kernels[*]} " == *" ${kernel} "* ]] || kernels+=("${kernel}")
     fi
 done
 [[ "${mod_removed}" -gt 0 ]] || warn "No patched kernel modules found"
 
-if [[ ${#kernels_touched[@]} -gt 0 ]]; then
-    info "Rebuilding initramfs so stock modules are packed again..."
-    for kernel in "${kernels_touched[@]}"; do
-        if command -v update-initramfs &>/dev/null; then
-            update-initramfs -u -k "${kernel}" 2>/dev/null || true
-        elif command -v dracut &>/dev/null; then
-            dracut --force --kver "${kernel}" 2>/dev/null || true
-        fi
-    done
-    if command -v mkinitcpio &>/dev/null && ! command -v update-initramfs &>/dev/null && ! command -v dracut &>/dev/null; then
-        mkinitcpio -P 2>/dev/null || true
+for kernel in "${kernels[@]}"; do
+    depmod -a "${kernel}" 2>/dev/null || true
+    # sync after depmod: a power cut before the next flush leaves a
+    # zero-length modules.dep and nothing resolves on boot.
+    sync
+    restore_stock_modules "${kernel}"
+done
+
+info "Rebuilding initramfs so stock modules are packed again..."
+for kernel in "${kernels[@]}"; do
+    if command -v update-initramfs &>/dev/null; then
+        update-initramfs -u -k "${kernel}" 2>/dev/null || true
+    elif command -v dracut &>/dev/null; then
+        dracut --force --kver "${kernel}" 2>/dev/null || true
     fi
-    ok "initramfs rebuild attempted"
+done
+if command -v mkinitcpio &>/dev/null && ! command -v update-initramfs &>/dev/null && ! command -v dracut &>/dev/null; then
+    mkinitcpio -P 2>/dev/null || true
 fi
+ok "initramfs rebuild attempted"
 
 for gsp in /lib/firmware/nvidia/*/gsp_tu10x.bin; do
     rm -f \
@@ -179,9 +243,11 @@ for gsp in /lib/firmware/nvidia/*/gsp_tu10x.bin; do
         "${gsp}.cmpunlocker.pat"
 done
 
-if [[ -d /opt/cmpunlocker ]]; then
-    rm -rf /opt/cmpunlocker
-    ok "Removed /opt/cmpunlocker (legacy install dir)"
+if [[ -d "${INSTALL_DIR}" ]]; then
+    rm -rf "${INSTALL_DIR}"
+    ok "Removed ${INSTALL_DIR} (legacy install dir)"
+else
+    warn "${INSTALL_DIR} not found (ok for module-only installs)"
 fi
 
 step "Done"
