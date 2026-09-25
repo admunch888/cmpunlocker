@@ -49,6 +49,9 @@ unlocks:
       wpr:            { addr: "0x001fa7c4", value: "0xffffffff" }
       wpr_cfg:        { addr: "0x001fa7cc", value: "0xfffff0ff" }
       opt_plm:        { addr: "0x008200fc", value: "0xffffffff" }
+      # RECONFIG_PLM gates the per-GPC RECONFIG_OVR registers (0x00820a40+i*4).
+      # Closed, the SM-RECONFIG writes are dropped and the SM count stays at 70.
+      reconfig_plm:   { addr: "0x008200d8", value: "0xffffffff" }
       feat:           { addr: "0x00823804", value: "0xffffffff" }
       feat2:          { addr: "0x00823b00", value: "0xffffffff" }
       fbpa_plm:       { addr: "0x009a0148", value: "0xffffffff" }
@@ -64,6 +67,17 @@ unlocks:
     registers:
       sm_speed_select_0: { addr: "0x0082381c", value: "0x88888888" }
       sm_speed_select_1: { addr: "0x00823820", value: "0x00000008" }
+
+  # Releases the TPC each enabled GPC reserves: 70 -> 74 SM. Ported from
+  # amoghmunikote/cmpunlocker 6c442ee, where one dual-card host measured the
+  # increment with no Xid and no 70 SM control arm. Only takes effect on a
+  # fresh GSP boot; a module reload does not pick it up.
+  sm_count:
+    patch: sec2-postbl-plm-ss-cfg.patch
+    registers:
+      reconfig_ovr_base: { addr: "0x00820a40", value: "0x000000ff" }
+      tpc_status_base:   { addr: "0x00820c38" }
+      opt_gpc_disable:   { addr: "0x00820350" }
 
   memory_geometry:
     patch: sec2-postbl-plm-ss-cfg.patch
