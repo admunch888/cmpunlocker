@@ -61,3 +61,10 @@ def test_optional_patches_apply(group, version):
     # The opt-in groups ride on top of PATCH_ORDER, exactly as build.sh appends
     # them, so they have to apply to every driver listed in driver/VERSION.
     _apply(ORDER + OPTIONAL[group], version)
+
+
+def test_plm_loop_covers_the_whole_table():
+    # A hard-coded bound fell behind the table twice, silently leaving the last
+    # PLMs closed. Size the loop from the table itself.
+    text = (PATCHES / "sec2-postbl-plm-ss-cfg.patch").read_text()
+    assert "plmIdx < NV_ARRAY_ELEMENTS(plmTable)" in text
