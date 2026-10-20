@@ -40,8 +40,10 @@ def patch_order():
 
 def optional_patches():
     """Patch groups build.sh appends to PATCH_ORDER only when the matching
-    opt-in flag is set (--mclk-ndiv / --p2p)."""
-    return {"mclk": _patch_array("MCLK_PATCHES"),
+    opt-in flag is set (--ecc / --mclk-ndiv / --p2p), in the order it
+    appends them."""
+    return {"ecc": _patch_array("ECC_PATCHES"),
+            "mclk": _patch_array("MCLK_PATCHES"),
             "p2p": _patch_array("P2P_PATCHES")}
 
 

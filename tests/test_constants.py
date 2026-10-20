@@ -42,7 +42,7 @@ def test_unknown_profile_is_rejected():
 
 
 def test_every_unlock_declares_a_known_group():
-    groups = {"base", "mclk", "p2p"}
+    groups = {"base", "ecc", "mclk", "p2p"}
     for name, unlock in sorted((DOC.get("unlocks") or {}).items()):
         assert (unlock or {}).get("group", "base") in groups, name
 

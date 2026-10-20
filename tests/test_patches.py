@@ -31,8 +31,9 @@ def tarball(version):
 
 
 def test_patch_order_covers_patch_dir():
-    # PATCH_ORDER holds the always-applied set; MCLK_PATCHES and P2P_PATCHES are
-    # appended by build.sh only for --mclk-ndiv / --p2p builds. Every file in
+    # PATCH_ORDER holds the always-applied set; ECC_PATCHES, MCLK_PATCHES and
+    # P2P_PATCHES are appended by build.sh only for --ecc / --mclk-ndiv / --p2p
+    # builds. Every file in
     # driver/patches must be reachable from exactly one of those arrays.
     assert sorted(ALL) == sorted(p.name for p in PATCHES.glob("*.patch"))
     assert len(ALL) == len(set(ALL)), "a patch is listed in more than one array"
@@ -61,6 +62,16 @@ def test_optional_patches_apply(group, version):
     # The opt-in groups ride on top of PATCH_ORDER, exactly as build.sh appends
     # them, so they have to apply to every driver listed in driver/VERSION.
     _apply(ORDER + OPTIONAL[group], version)
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_all_optional_patches_apply_together(version):
+    # --ecc --mclk-ndiv --p2p in one install: every group stacked in the order
+    # build.sh appends them.
+    names = list(ORDER)
+    for group in OPTIONAL.values():
+        names += group
+    _apply(names, version)
 
 
 def test_plm_loop_covers_the_whole_table():

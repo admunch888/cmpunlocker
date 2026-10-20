@@ -14,6 +14,7 @@ CONFIGURE_GEN2_SERVICE=1
 MCLK_NDIV=""
 REFRESH_RFC=""
 ENABLE_P2P=""
+ENABLE_ECC=""
 INSTALL_PERSIST=1
 PIN_PACKAGES=1
 CONFIGURE_PASSTHROUGH=1
@@ -26,14 +27,15 @@ for arg in "$@"; do
         --mclk-ndiv=*) MCLK_NDIV="${arg#*=}" ;;
         --refresh=*|--REFRESH=*) REFRESH_RFC="${arg#*=}" ;;
         --p2p) ENABLE_P2P=1 ;;
+        --ecc) ENABLE_ECC=1 ;;
         --no-persist) INSTALL_PERSIST=0 ;;
         --no-pin) PIN_PACKAGES=0 ;;
         --no-passthrough) CONFIGURE_PASSTHROUGH=0 ;;
         -h|--help)
             cat <<'EOF'
 Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
-                         [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin]
-                         [--no-passthrough]
+                         [--mclk-ndiv=N] [--refresh=N] [--p2p] [--ecc]
+                         [--no-persist] [--no-pin] [--no-passthrough]
 
   --profile=8gb   Force 8GB metadata label (geometry is still chosen per PCI ID)
   --profile=10gb  Force 10GB metadata label (geometry is still chosen per PCI ID)
@@ -57,6 +59,9 @@ Usage: sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service]
                   change with gpu_burn reporting zero errors.
   --p2p           Enable CMP-only BAR1 peer access. Requires a compatible PCIe
                   topology; verify with cudaDeviceCanAccessPeer and real copies.
+  --ecc           Enable DRAM and SRAM ECC. Off by default: ECC costs some
+                  usable memory and bandwidth, so measure both before and
+                  after (nvidia-smi, p2p-verify --local).
   --no-persist    Do not auto-rebuild patched modules after kernel updates.
   --no-pin        Do not pin the installed NVIDIA driver packages.
   --no-passthrough
@@ -269,6 +274,7 @@ CMPUNLOCKER_CARD_PROFILE="${CARD_PROFILE}" \
 CMPUNLOCKER_GPU_INVENTORY="${CMPUNLOCKER_GPU_INVENTORY}" \
 CMPUNLOCKER_MCLK_NDIV="${MCLK_NDIV}" \
 CMPUNLOCKER_ENABLE_P2P="${ENABLE_P2P}" \
+CMPUNLOCKER_ENABLE_ECC="${ENABLE_ECC}" \
     "${SCRIPT_DIR}/driver/build.sh"
 ok "Patched modules installed (profile ${CARD_PROFILE})"
 
@@ -412,6 +418,7 @@ else
        CMPUNLOCKER_GPU_INVENTORY="${CMPUNLOCKER_GPU_INVENTORY}" \
        CMPUNLOCKER_MCLK_NDIV="${MCLK_NDIV}" \
        CMPUNLOCKER_ENABLE_P2P="${ENABLE_P2P}" \
+       CMPUNLOCKER_ENABLE_ECC="${ENABLE_ECC}" \
        CMPUNLOCKER_PIN_PACKAGES="${PIN_PACKAGES}" \
            "${SCRIPT_DIR}/persist/install-persist.sh"; then
         PERSIST_STATUS="installed"
@@ -567,6 +574,11 @@ if [[ -n "${ENABLE_P2P}" ]]; then
     echo "P2P:      enabled (verify with a real peer-to-peer copy)"
 else
     echo "P2P:      off (firmware-reported capabilities preserved)"
+fi
+if [[ -n "${ENABLE_ECC}" ]]; then
+    echo "ECC:      enabled (DRAM + SRAM)"
+else
+    echo "ECC:      off"
 fi
 echo "Passthrough: ${PASSTHROUGH_STATUS}"
 echo "DRAM timings: ${TIMINGS_STATUS}"

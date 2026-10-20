@@ -30,10 +30,11 @@ def present(blob_lower, value):
 
 
 # build.sh keeps the always-applied patches in PATCH_ORDER and appends the
-# opt-in groups only when --mclk-ndiv / --p2p ask for them. constants.yaml
-# names the group in each unlock so a patch cannot quietly move between an
+# opt-in groups only when --ecc / --mclk-ndiv / --p2p ask for them.
+# constants.yaml names the group in each unlock so a patch cannot quietly move between an
 # always-on and an opt-in build.
 PATCH_ARRAYS = (("base", "PATCH_ORDER"),
+                ("ecc", "ECC_PATCHES"),
                 ("mclk", "MCLK_PATCHES"),
                 ("p2p", "P2P_PATCHES"))
 

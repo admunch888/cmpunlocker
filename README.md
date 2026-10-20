@@ -93,8 +93,8 @@ Then perform a **cold reboot** (full power off, then boot).
 
 ```bash
 sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service] \
-                  [--mclk-ndiv=N] [--p2p] [--no-persist] [--no-pin] \
-                  [--no-passthrough]
+                  [--mclk-ndiv=N] [--refresh=N] [--p2p] [--ecc] \
+                  [--no-persist] [--no-pin] [--no-passthrough]
 ```
 
 | Flag | Effect |
@@ -104,6 +104,7 @@ sudo ./install.sh [--profile=8gb|10gb] [--no-iommu] [--no-gen2-service] \
 | `--no-gen2-service` | Do not install the early-boot PCIe Gen2 retrain service |
 | `--mclk-ndiv=N` | Compile an HBM2e PLL target from NDIV 30–80 (N × 27 MHz). Below the VBIOS NDIV downclocks, above it overclocks. Omit to keep the VBIOS clock. |
 | `--p2p` | Enable CMP-only BAR1 peer access (see below) |
+| `--ecc` | Enable DRAM and SRAM ECC (see below) |
 | `--no-persist` | Do not auto-rebuild patched modules after kernel updates |
 | `--no-pin` | Do not pin the installed NVIDIA driver packages |
 | `--no-passthrough` | Do not prepare the cards for VM passthrough (on by default, so a VM sees an unlocked card with a stock driver) |
@@ -187,6 +188,22 @@ Confirmed applying on nvidia-open 615.71.09, 2x CMP 170HX 8GB (VBIOS
 card with `lock=1`, and `--refresh=24` reads back on both. Applying is not the
 same as stable — qualify with `gpu_burn`.
 
+### ECC (`--ecc`)
+
+Opt-in. Applies the DRAM and SRAM ECC patches (`ecc-enable`,
+`ecc-fbpa-static`, `ecc-reporting`). ECC trades some usable memory and
+bandwidth for error detection and correction, so record both before
+turning it on and compare afterwards:
+
+```bash
+nvidia-smi --query-gpu=memory.total,ecc.mode.current --format=csv
+p2p-verify --local
+```
+
+Like `--mclk-ndiv` and `--p2p` it is compiled in, recorded in
+`/etc/cmpunlocker/build.conf`, and replayed on kernel-update rebuilds. To
+turn it off, re-run `install.sh` without `--ecc` and reboot.
+
 ### P2P (`--p2p`)
 
 Opt-in. Enables real BAR1 peer access for CMP 170HX/220HX by overriding the GSP
@@ -267,7 +284,7 @@ costs ~141 MB of the 63.5 GiB exposed memory and removes the fault entirely.
   </tr>
     <tr>
     <td>Error-Correcting Code (ECC) DRAM and SRAM </td>
-    <td>Working ✓</td>
+    <td>Working ✓ (opt-in, <code>--ecc</code>)</td>
   </tr>
   <tr>
     <td>Full BAR1 Size (64GB)</td>

@@ -73,6 +73,34 @@ def test_dropped_p2p_is_caught(tmp_path):
     assert "p2p" in out
 
 
+def test_ecc_build_passes(tmp_path):
+    run_check(tmp_path,
+              {"mclk_ndiv": "70", "p2p": "enabled", "ecc": "enabled"},
+              {"CMPUNLOCKER_MCLK_NDIV": "70", "CMPUNLOCKER_ENABLE_P2P": "1",
+               "CMPUNLOCKER_ENABLE_ECC": "1"},
+              expect_fail=False)
+
+
+def test_dropped_ecc_is_caught(tmp_path):
+    out = run_check(tmp_path,
+                    {"mclk_ndiv": "70", "p2p": "enabled", "ecc": ""},
+                    {"CMPUNLOCKER_MCLK_NDIV": "70", "CMPUNLOCKER_ENABLE_P2P": "1",
+                     "CMPUNLOCKER_ENABLE_ECC": "1"},
+                    expect_fail=True)
+    assert "ecc" in out
+
+
+def test_unwanted_ecc_is_caught(tmp_path):
+    # ECC changes usable memory, so a module built with it when build.conf
+    # says off is drift too.
+    out = run_check(tmp_path,
+                    {"mclk_ndiv": "stock", "p2p": "", "ecc": "enabled"},
+                    {"CMPUNLOCKER_MCLK_NDIV": "", "CMPUNLOCKER_ENABLE_P2P": "",
+                     "CMPUNLOCKER_ENABLE_ECC": ""},
+                    expect_fail=True)
+    assert "ecc" in out
+
+
 def test_wrong_driver_version_is_caught(tmp_path):
     out = run_check(tmp_path,
                     {"mclk_ndiv": "stock", "p2p": "", "driver_version": "610.57.04"},
@@ -106,12 +134,13 @@ def test_rebuild_sources_build_conf():
 def test_install_persist_records_the_flags():
     text = (repo.ROOT / "persist" / "install-persist.sh").read_text()
     for var in ("CMPUNLOCKER_MCLK_NDIV", "CMPUNLOCKER_ENABLE_P2P",
-                "CMPUNLOCKER_DRIVER_VERSION", "CMPUNLOCKER_CARD_PROFILE"):
+                "CMPUNLOCKER_ENABLE_ECC", "CMPUNLOCKER_DRIVER_VERSION", "CMPUNLOCKER_CARD_PROFILE"):
         assert var in text, var
 
 
 def test_install_passes_the_flags_through():
     text = (repo.ROOT / "install.sh").read_text()
     block = text[text.index('step "Surviving kernel updates"'):]
-    for var in ("CMPUNLOCKER_MCLK_NDIV", "CMPUNLOCKER_ENABLE_P2P"):
+    for var in ("CMPUNLOCKER_MCLK_NDIV", "CMPUNLOCKER_ENABLE_P2P",
+                "CMPUNLOCKER_ENABLE_ECC"):
         assert var in block, var

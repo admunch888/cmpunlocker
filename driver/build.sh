@@ -61,6 +61,8 @@ PATCH_ORDER=(
     name-string.patch
     bar1-resize-unlock.patch
     cmp-sku-mask.patch
+)
+ECC_PATCHES=(
     ecc-enable.patch
     ecc-fbpa-static.patch
     ecc-reporting.patch
@@ -77,6 +79,10 @@ P2P_PATCHES=(
 )
 MCLK_NDIV="${CMPUNLOCKER_MCLK_NDIV:-}"
 ENABLE_P2P="${CMPUNLOCKER_ENABLE_P2P:-}"
+ENABLE_ECC="${CMPUNLOCKER_ENABLE_ECC:-}"
+if [[ -n "${ENABLE_ECC}" ]]; then
+    PATCH_ORDER+=("${ECC_PATCHES[@]}")
+fi
 if [[ -n "${MCLK_NDIV}" ]]; then
     if ! [[ "${MCLK_NDIV}" =~ ^[0-9]+$ ]] || (( MCLK_NDIV < 30 || MCLK_NDIV > 80 )); then
         die "CMPUNLOCKER_MCLK_NDIV must be an integer from 30 through 80"
@@ -106,8 +112,8 @@ CONSTANTS="${SCRIPT_DIR}/../common/constants.yaml"
 CONSTANTS_ENV="$(python3 "${SCRIPT_DIR}/../tools/read-constants.py" "${CONSTANTS}" "${PATCH_DIR}" "${SCRIPT_DIR}/build.sh" "${PROFILE}")" || die "common/constants.yaml rejected (see error above)"
 eval "${CONSTANTS_ENV}"
 
-# mclk/p2p stay in the stamp: they are opt-in via env and must invalidate the cached tree.
-BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:mclk=${MCLK_NDIV:-stock}:p2p=${ENABLE_P2P:-off}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
+# mclk/p2p/ecc stay in the stamp: they are opt-in via env and must invalidate the cached tree.
+BUILD_STAMP="${VERSION}:${KVER}:${PROFILE}:mclk=${MCLK_NDIV:-stock}:p2p=${ENABLE_P2P:-off}:ecc=${ENABLE_ECC:-off}:${PATCH_HASH}:$(sha256sum "${SCRIPT_DIR}/build.sh" | cut -d' ' -f1)"
 
 mkdir -p "${BUILD_ROOT}"
 
@@ -171,6 +177,11 @@ PY
     else
         info "P2P override disabled; firmware-reported peer capabilities are preserved"
     fi
+    if [[ -n "${ENABLE_ECC}" ]]; then
+        ok "ECC patches enabled (DRAM + SRAM)"
+    else
+        info "ECC disabled; the cards run without DRAM/SRAM ECC"
+    fi
 
     GSP_C="${SRC_DIR}/src/nvidia/src/kernel/gpu/gsp/kernel_gsp.c"
     [[ -f "${GSP_C}" ]] || die "Missing ${GSP_C} after patching"
@@ -233,6 +244,7 @@ if [[ "${BUILD_ONLY}" == "0" ]]; then
     printf '%s\n' "${UNLOCK_LABEL}" > "${INSTALL_MOD_DIR}/unlock_geometry"
     printf '%s\n' "${MCLK_NDIV:-stock}" > "${INSTALL_MOD_DIR}/mclk_ndiv"
     printf '%s\n' "${ENABLE_P2P:+enabled}" > "${INSTALL_MOD_DIR}/p2p"
+    printf '%s\n' "${ENABLE_ECC:+enabled}" > "${INSTALL_MOD_DIR}/ecc"
     if [[ -n "${CMPUNLOCKER_GPU_INVENTORY:-}" ]]; then
         printf '%s\n' "${CMPUNLOCKER_GPU_INVENTORY}" > "${INSTALL_MOD_DIR}/gpu_inventory"
         ok "Wrote gpu_inventory ($(echo "${CMPUNLOCKER_GPU_INVENTORY}" | grep -c . || true) GPU(s))"

@@ -56,7 +56,7 @@ fail() {
     fail "payload missing at ${PAYLOAD_DIR}/driver — re-run install.sh"
 
 #
-# The compile-time flags (overclock, timings, P2P, driver version) live here.
+# The compile-time flags (overclock, timings, P2P, ECC, driver version) live here.
 # Without them a rebuild would silently produce a stock-clocked driver.
 #
 if [[ -r "${CONF_FILE}" ]]; then
@@ -81,6 +81,7 @@ log "building for ${KVER} (running: $(uname -r))"
 [[ -n "${CMPUNLOCKER_MCLK_NDIV:-}" ]]    && log "  mclk-ndiv=${CMPUNLOCKER_MCLK_NDIV}"
 [[ -n "${CMPUNLOCKER_MCLK_TIMINGS:-}" ]] && log "  mclk-timings=${CMPUNLOCKER_MCLK_TIMINGS}"
 [[ -n "${CMPUNLOCKER_ENABLE_P2P:-}" ]]   && log "  p2p=on"
+[[ -n "${CMPUNLOCKER_ENABLE_ECC:-}" ]]   && log "  ecc=on"
 
 CMPUNLOCKER_KVER="${KVER}" \
 CMPUNLOCKER_DRIVER_VERSION="${CMPUNLOCKER_DRIVER_VERSION:-}" \
@@ -89,6 +90,7 @@ CMPUNLOCKER_GPU_INVENTORY="$(cat /etc/cmpunlocker/gpu_inventory 2>/dev/null || t
 CMPUNLOCKER_MCLK_NDIV="${CMPUNLOCKER_MCLK_NDIV:-}" \
 CMPUNLOCKER_MCLK_TIMINGS="${CMPUNLOCKER_MCLK_TIMINGS:-}" \
 CMPUNLOCKER_ENABLE_P2P="${CMPUNLOCKER_ENABLE_P2P:-}" \
+CMPUNLOCKER_ENABLE_ECC="${CMPUNLOCKER_ENABLE_ECC:-}" \
 CMPUNLOCKER_VERBOSE="${CMPUNLOCKER_VERBOSE:-0}" \
     "${PAYLOAD_DIR}/driver/build.sh" || fail "build failed for ${KVER}"
 
@@ -100,7 +102,7 @@ fi
 #
 # Confirm the rebuild carried the options forward, rather than assuming it did.
 # build.sh stamps what it actually built into the module directory, so a
-# rebuild that silently dropped the overclock or P2P - an empty build.conf, a
+# rebuild that silently dropped the overclock, P2P or ECC - an empty build.conf, a
 # stale payload, a flag that stopped being honoured - is visible here instead
 # of at the next boot as a card quietly running at stock.
 #
@@ -108,6 +110,8 @@ want_ndiv="${CMPUNLOCKER_MCLK_NDIV:-stock}"
 [[ -z "${want_ndiv}" ]] && want_ndiv="stock"
 want_p2p=""
 [[ -n "${CMPUNLOCKER_ENABLE_P2P:-}" ]] && want_p2p="enabled"
+want_ecc=""
+[[ -n "${CMPUNLOCKER_ENABLE_ECC:-}" ]] && want_ecc="enabled"
 
 drift=""
 check_marker() {
@@ -120,13 +124,14 @@ check_marker() {
 }
 check_marker mclk_ndiv "${want_ndiv}"
 check_marker p2p       "${want_p2p}"
+check_marker ecc       "${want_ecc}"
 [[ -n "${CMPUNLOCKER_DRIVER_VERSION:-}" ]] && \
     check_marker driver_version "${CMPUNLOCKER_DRIVER_VERSION}"
 
 if [[ -n "${drift}" ]]; then
     fail "rebuilt modules do not match ${CONF_FILE} (see the mismatches above)"
 fi
-log "verified: mclk=${want_ndiv} p2p=${want_p2p:-off}"
+log "verified: mclk=${want_ndiv} p2p=${want_p2p:-off} ecc=${want_ecc:-off}"
 
 rm -f "${MARKER}"
 log "OK: patched modules installed for ${KVER}"
