@@ -18,6 +18,8 @@
   </tr>
 </table>
 
+**[Join our Discord community](https://discord.gg/CdHSakKSFv)** for support and discussions.
+
 ---
 
 ## Proof of Concept
@@ -261,6 +263,10 @@ costs ~141 MB of the 63.5 GiB exposed memory and removes the fault entirely.
   </tr>
   <tr>
     <td>PCIe Gen 2 speeds</td>
+    <td>Working ✓</td>
+  </tr>
+    <tr>
+    <td>Error-Correcting Code (ECC) DRAM and SRAM </td>
     <td>Working ✓</td>
   </tr>
   <tr>

@@ -61,6 +61,9 @@ PATCH_ORDER=(
     name-string.patch
     bar1-resize-unlock.patch
     cmp-sku-mask.patch
+    ecc-enable.patch
+    ecc-fbpa-static.patch
+    ecc-reporting.patch
 )
 MCLK_PATCHES=(
     mclk-clock-tuning-pre-gsp.patch
